@@ -258,6 +258,18 @@
 
 **关键决策**：便携模式（exe 同级），无 env 覆盖（用户选定）；安装目录须可写——勿装 `Program Files`，否则首启下载失败。配置/历史/日志仍留 `%APPDATA%`（仅便携化模型）。
 
+### 修复 — 设置面板 / 译文卡片关闭无效 ✅（2026-06-26）
+
+**背景**：设置面板点 ✕/Esc、译文卡片点「关闭」/Esc 都"完全不消失"。eframe 0.30 下子 viewport 的 `ViewportCommand::Close` 只设 `close_requested` flag，**不自动销毁窗口**；子 viewport 的 ✕ 关闭信号只能在 render 闭包内的 `vctx` 读到，主窗口 ctx 读不到。两个面板此前都只设了内部 flag，缺了"主动发 Close"这一步，OS 窗口被 `show_viewport_deferred` 维持不灭。对照 overlay（能正常关闭）：闭包内发 `send_viewport_cmd(ViewportCommand::Close)`（overlay.rs:160,208）+ 返回值让主循环停调用。
+
+**产出**（每处对称补一行）：
+- `snaptext-app/src/ui/card.rs`：Esc 分支 + 「关闭」按钮，设 `close_requested=true` 后补 `vctx.send_viewport_cmd(ViewportCommand::Close)`（沿用既有返回值停调用机制，Close 关窗口 + 返回值清状态）。
+- `snaptext-app/src/ui/settings.rs`：import 补 `ViewportCommand`；✕/Esc 分支设 `outcome=Cancel` 后补 `vctx.send_viewport_cmd(ViewportCommand::Close)`。不动「保存」「取消」按钮（走 outcome 正常链路）+ 不动主循环轮询逻辑。
+
+**验收**：`cargo clippy -p snaptext-app --all-targets` ✅（0 warnings）。GUI 关闭交互待用户验证（✕/Esc/关闭按钮是否真能消失）。
+
+**关键决策 / 风险**：只补 `send_viewport_cmd(Close)`、不动主循环和现有 outcome/返回值机制（最小改动，与 overlay 成功模式对称）。若加 Close 后 settings 仍"完全不消失"，说明 eframe 0.30 对带 OS 标题栏的 deferred viewport 有更深问题（issue #4842，Windows 下关 deferred viewport 可能 access violation），届时看 settings.rs:132-138 诊断日志里 `close_requested`/`close_event_n` 是否非零判定。
+
 ---
 
 ## 进行中

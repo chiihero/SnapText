@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use eframe::egui::{self, Context, Key, Layout, Ui, ViewportBuilder, ViewportId};
+use eframe::egui::{self, Context, Key, Layout, Ui, ViewportBuilder, ViewportCommand, ViewportId};
 
 use snaptext_core::config::{Config, DeepLPlan, ProviderKind, Tier};
 use snaptext_core::types::Lang;
@@ -137,6 +137,7 @@ fn render(vctx: &Context, state: &SharedSettings) {
             "settings 触发关闭"
         );
         state.lock().unwrap().outcome = SettingsOutcome::Cancel;
+        vctx.send_viewport_cmd(ViewportCommand::Close);
     }
 
     let mut s = state.lock().unwrap();

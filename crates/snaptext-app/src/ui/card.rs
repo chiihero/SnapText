@@ -112,6 +112,7 @@ fn render(vctx: &Context, state: &SharedCard) {
     // Esc 关闭。
     if vctx.input(|i| i.key_pressed(Key::Escape)) {
         state.lock().unwrap().close_requested = true;
+        vctx.send_viewport_cmd(ViewportCommand::Close);
         return;
     }
 
@@ -167,6 +168,7 @@ fn render(vctx: &Context, state: &SharedCard) {
                             if ui.button("关闭").clicked() {
                                 tracing::info!(target: "snaptext::diag", "card 关闭 clicked");
                                 state.lock().unwrap().close_requested = true;
+                                ui.ctx().send_viewport_cmd(ViewportCommand::Close);
                             }
                             if ui.button("复制原文").clicked() {
                                 tracing::info!(target: "snaptext::diag", "card 复制原文 clicked");

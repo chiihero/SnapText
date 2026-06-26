@@ -235,7 +235,7 @@ pub enum CoreError {
 | `theme.rs` 🟢 | 浅色主题（配色常量 + `apply(ctx)` 设 visuals/style + `card_frame` 分组容器；`main.rs` creation context 调用） | `ctx.set_visuals`, `ctx.set_style`, `Frame::group` |
 | `overlay.rs` 🟢 | 选区 Overlay（全屏置顶 Viewport + 帧背景纹理 + 50% 蒙版 + 鼠标框选 + Esc 取消） | `show_viewport_deferred`, `Painter`, `interact_pos`, `Arc<Mutex<OverlayState>>` |
 | `card.rs` 🟢 | 译文悬浮卡片（独立 always-on-top viewport，跟随选区位置 / 近屏边翻向 / 固定显示；原文折叠 + 复制译文/原文/关闭） | `show_viewport_deferred`, `ViewportCommand::OuterPosition`, `Arc<Mutex<CardState>>` |
-| `settings.rs` 🟢 | 设置面板（独立 viewport：OS 原生标题栏 + 左侧导航 8 分类 + 右侧分组卡片；API Key 密码框；草稿机制 `Arc<Mutex<SettingsState>>`，保存写回 + 即时下发；关闭检测 `ViewportEvent::Close`） | `show_viewport_deferred`, `SidePanel::left`, `ScrollArea`, `card_frame` |
+| `settings.rs` 🟢 | 设置面板（独立 viewport：OS 原生标题栏 + 左侧导航 8 分类 + 右侧分组卡片；API Key 密码框；草稿机制 `Arc<Mutex<SettingsState>>`，保存写回 + 即时下发；关闭 = `send_viewport_cmd(Close)` + outcome 轮询双路，与 card/overlay 对称） | `show_viewport_deferred`, `SidePanel::left`, `ScrollArea`, `card_frame`, `ViewportCommand` |
 | `onboarding.rs` 🟢 | 首次启动引导页（热键/引擎/Key/档位/目标语言；完成/跳过后标记 `onboarding_completed`） | `egui::Window`, `ComboBox` |
 | `history_view.rs` | 历史记录面板（P1, DU-15，精简版） | `egui::ScrollArea` |
 | `updater.rs` | 自动更新（P2, DU-19） | HTTP + 签名校验 |
