@@ -1,0 +1,20 @@
+# Rust 构建产物
+/target
+**/*.rs.bk
+
+# Windows 调试符号
+*.pdb
+
+# 编辑器/IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 本地环境
+.env
+.env.local
+
+# 运行日志 / 临时产物
+*.log
+smiley-tmp.zip

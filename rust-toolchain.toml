@@ -1,0 +1,4 @@
+# 锁定 stable 工具链（Windows 上用 MSVC target，见 DESIGN §4）。
+[toolchain]
+channel = "stable"
+profile = "default"
