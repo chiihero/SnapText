@@ -1,0 +1,48 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  DU-13 WiX 模板：SnapText MSI 安装包。
+  由 cargo-wix 使用（scripts/build-msi.ps1）。含开始菜单快捷方式 + 卸载入口。
+  占位：Version/Manufacturer/upgrade Guid 由 cargo-wix 在 build 时填/替换。
+-->
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+  <Product
+    Id='*'
+    Name='SnapText'
+    UpgradeCode='7B8A6C5D-4F3E-2B1A-9C8D-7E6F5A4B3C2D'
+    Language='2052' Codepage='936'
+    Version='$(var.Version)'
+    Manufacturer='SnapText'>
+
+    <Package Id='*' Keywords='SnapText OCR Translator'
+      Description='SnapText 截图 OCR 翻译工具'
+      Manufacturer='SnapText' InstallerVersion='500'
+      Languages='2052' Compressed='yes' InstallScope='perMachine' />
+
+    <MajorUpgrade DowngradeErrorMessage='已有更新版本的 SnapText。' />
+    <Media Id='1' Cabinet='snaptext.cab' EmbedCab='yes' />
+
+    <Directory Id='TARGETDIR' Name='SourceDir'>
+      <Directory Id='ProgramFiles64Folder'>
+        <Directory Id='INSTALLDIR' Name='SnapText'>
+          <Component Id='MainExecutable' Guid='*'>
+            <File Id='SnapTextExe' Name='snaptext.exe' DiskId='1' Source='$(var.CargoTargetDir)\snaptext.exe' KeyPath='yes' />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id='ProgramMenuFolder'>
+        <Directory Id='StartMenuDir' Name='SnapText'>
+          <Component Id='StartMenuShortcut' Guid='*'>
+            <Shortcut Id='StartMenuShortcut' Name='SnapText' Target='[INSTALLDIR]snaptext.exe' WorkingDirectory='INSTALLDIR' />
+            <RemoveFolder Id='RemoveStartMenuDir' On='uninstall' />
+            <RegistryValue Root='HKCU' Key='Software\SnapText' Name='installed' Type='integer' Value='1' KeyPath='yes' />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id='Complete' Title='SnapText' Level='1'>
+      <ComponentRef Id='MainExecutable' />
+      <ComponentRef Id='StartMenuShortcut' />
+    </Feature>
+  </Product>
+</Wix>
