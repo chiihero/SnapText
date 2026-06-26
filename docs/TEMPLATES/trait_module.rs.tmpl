@@ -1,0 +1,121 @@
+// TEMPLATES/trait_module.rs.tmpl
+// ============================================================================
+// SnapText — Trait 模块定义模板
+// ============================================================================
+// 用途：新增 XxxProvider trait（Capture / Ocr / Translation）时的起点
+// 用法：复制本文件到 `crates/snaptext-core/src/{{module}}/mod.rs`
+// 参考：CODE_MAP.md, CONVENTIONS.md §7, GLOSSARY.md
+// ============================================================================
+
+//! {{Module}} 模块。
+//!
+//! 本模块定义 {{TraitName}} trait 与具体实现的注册入口。
+//!
+//! # 设计原则
+//!
+//! - 上层（Orchestrator）只依赖 trait，不依赖具体类型
+//! - 切换实现（如换 Provider）零成本
+//! - 测试时可注入 mock 实现
+//!
+//! # 实现清单
+//!
+//! | 类型 | 状态 | 备注 |
+//! |---|---|---|
+//! | `{{ProviderImplName}}` | 🟢 已实现 | 默认实现，详见 ADR-{{XXXX}} |
+
+mod {{provider_impl_file}};
+
+pub use {{provider_impl_file}}::{{ProviderImplName}};
+
+use async_trait::async_trait;
+
+use crate::error::CoreError;
+use crate::types::{{ProviderId}};
+
+/// {{TraitName}} 抽象。
+///
+/// 所有 {{Module}} Provider 必须实现此 trait。
+///
+/// # 实现者须知
+///
+/// - 实现必须是 `Send + Sync`（trait 已声明）
+/// - 异步方法内部若调用 CPU 密集操作，请用 `spawn_blocking`
+/// - 错误统一返回 `CoreError`
+///
+/// # 调用方须知
+///
+/// - 实例通过 [`build_provider`] 工厂函数构造
+/// - 注入到 `Arc<dyn {{TraitName}}>` 持有
+#[async_trait]
+pub trait {{TraitName}}: Send + Sync {
+    /// 返回 Provider 唯一标识（用于日志、配置路由）。
+    fn id(&self) -> {{ProviderId}};
+
+    // TODO: 在此声明 trait 方法
+    //
+    // 示例：
+    //
+    // /// 执行 {{action}}。
+    // ///
+    // /// # 参数
+    // /// - `req`: 请求参数
+    // ///
+    // /// # 错误
+    // /// - `CoreError::{{Module}}`: {{Module}} 处理失败
+    // async fn {{method}}(&self, req: {{RequestType}}) -> Result<{{ResponseType}}, CoreError>;
+}
+
+/// 工厂函数：根据配置返回对应 Provider 实例。
+///
+/// # 参数
+/// - `cfg`: {{Module}} 配置段
+/// - `http_client`: 共享的 HTTP 客户端（必须共享以复用连接池）
+///
+/// # 错误
+/// - `CoreError::Config`: 配置错误（如 API key 缺失）
+pub fn build_provider(
+    cfg: &crate::config::{{Module}}Config,
+    http_client: reqwest::Client,
+) -> Result<Box<dyn {{TraitName}}>, CoreError> {
+    match cfg.provider.as_str() {
+        "{{provider_id_default}}" => Ok(Box::new({{ProviderImplName}}::new(
+            http_client,
+            cfg.{{provider_id_default}}.clone(),
+        )?)),
+        other => Err(CoreError::Config(format!(
+            "unknown {{module}} provider: {}",
+            other
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Mock 实现，用于测试 Orchestrator 与 {{TraitName}} 的解耦。
+    struct Mock{{TraitName}};
+
+    #[async_trait]
+    impl {{TraitName}} for Mock{{TraitName}} {
+        fn id(&self) -> {{ProviderId}} {
+            {{ProviderId}}::from_static("mock")
+        }
+    }
+
+    #[test]
+    fn mock_can_be_boxed() {
+        let provider: Box<dyn {{TraitName}}> = Box::new(Mock{{TraitName}});
+        assert_eq!(provider.id().as_str(), "mock");
+    }
+
+    #[test]
+    fn build_provider_rejects_unknown() {
+        let cfg = crate::config::{{Module}}Config {
+            provider: "nonexistent".into(),
+            ..Default::default()
+        };
+        let result = build_provider(&cfg, reqwest::Client::new());
+        assert!(result.is_err());
+    }
+}

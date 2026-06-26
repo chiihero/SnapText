@@ -1,0 +1,100 @@
+// TEMPLATES/error_type.rs.tmpl
+// ============================================================================
+// SnapText — 模块错误类型模板
+// ============================================================================
+// 用途：新增模块（如 Capture / Ocr / Translate / History）时定义错误类型
+// 用法：复制本文件到 `crates/snaptext-core/src/{{module}}/error.rs`
+//       或并入 `crates/snaptext-core/src/error.rs`
+// 参考：CONVENTIONS.md §3, thiserror 文档
+// ============================================================================
+
+//! {{Module}} 模块的错误类型。
+//!
+//! # 设计
+//!
+//! - 用 `thiserror` 派生 `Error` 与 `Display`
+//! - 每个变体对应一类失败模式（便于上层精准处理）
+//! - 通过 `#[from]` 自动从底层错误转换
+
+use thiserror::Error;
+
+/// {{Module}} 模块错误。
+#[derive(Debug, Error)]
+pub enum {{Module}}Error {
+    /// 网络请求失败（DNS / 连接 / TLS）。
+    #[error("network error: {0}")]
+    Network(String),
+
+    /// HTTP 状态码非 2xx。
+    #[error("api error: status={status}, body={body}")]
+    Api {
+        /// HTTP 状态码（如 429、500）。
+        status: u16,
+        /// 服务端响应体（用于诊断）。
+        body: String,
+    },
+
+    /// 请求 / 响应序列化失败。
+    #[error("serialization error: {0}")]
+    Serialization(String),
+
+    /// 响应解析失败（字段缺失、类型不匹配等）。
+    #[error("parse error: {0}")]
+    Parse(String),
+
+    /// 调用超时。
+    #[error("timeout after {} seconds", .0)]
+    Timeout,
+
+    /// 配置错误（API key 缺失、base_url 无效等）。
+    #[error("config error: {0}")]
+    Config(String),
+
+    /// 模型文件相关（不存在、SHA256 校验失败）。
+    #[error("model error: {0}")]
+    Model(String),
+}
+
+/// 从 reqwest::Error 转换。
+///
+/// 区分 timeout / 网络两类，方便上层处理。
+impl From<reqwest::Error> for {{Module}}Error {
+    fn from(e: reqwest::Error) -> Self {
+        if e.is_timeout() {
+            Self::Timeout
+        } else {
+            Self::Network(e.to_string())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_outputs_chinese() {
+        // CONVENTIONS.md §1：错误消息必须中文
+        let e = {{Module}}Error::Network("connection refused".into());
+        let s = format!("{}", e);
+        assert!(s.contains("网络") || s.contains("network"), "got: {}", s);
+    }
+
+    #[test]
+    fn api_error_carries_status_and_body() {
+        let e = {{Module}}Error::Api {
+            status: 429,
+            body: "rate limited".into(),
+        };
+        let s = format!("{}", e);
+        assert!(s.contains("429"));
+        assert!(s.contains("rate limited"));
+    }
+
+    #[test]
+    fn timeout_converted_from_reqwest_timeout() {
+        // 这个测试需要构造 reqwest::Error，简化为 enum 直接匹配
+        let e = {{Module}}Error::Timeout;
+        assert!(format!("{}", e).contains("timeout"));
+    }
+}

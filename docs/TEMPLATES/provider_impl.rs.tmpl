@@ -1,0 +1,340 @@
+// TEMPLATES/provider_impl.rs.tmpl
+// ============================================================================
+// SnapText — Provider 实现模板
+// ============================================================================
+// 用途：新增 XxxProvider（Capture / Ocr / Translation）时的标准起点
+// 用法：复制本文件到目标路径，替换 {{...}} 占位符
+// 参考：CONVENTIONS.md, AI_GUIDE.md §6.1, GLOSSARY.md
+// ============================================================================
+
+//! {{ProviderName}} 实现。
+//!
+//! 决策背景：详见 ADR-{{XXXX}}
+//!
+//! # 示例
+//!
+//! ```no_run
+//! use snaptext_core::translate::{{provider_name}}::{{ProviderName}};
+//!
+//! let provider = {{ProviderName}}::new(client, cfg);
+//! let resp = provider.translate(req).await?;
+//! ```
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use reqwest::Client;
+use tracing::{info, warn, instrument};
+
+use crate::error::{CoreError, {{Module}}Error};
+use crate::types::{
+    LangPair, ProviderId, {{RequestType}}, {{ResponseType}}, TokenUsage,
+};
+
+/// {{ProviderName}} 的配置（从 Config.toml 反序列化）。
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct {{ProviderName}}Config {
+    /// API key。优先从 env `SNAPTEXT_{{PROVIDER_NAME_UPPER}}_KEY` 读取。
+    #[serde(default)]
+    pub api_key: String,
+
+    /// 模型 / endpoint 标识。
+    #[serde(default = "default_model")]
+    pub model: String,
+
+    /// API base URL。
+    #[serde(default = "default_base_url")]
+    pub base_url: String,
+
+    /// 单次请求超时（秒）。
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+fn default_model() -> String {
+    "{{default_model}}".into()
+}
+
+fn default_base_url() -> String {
+    "{{default_base_url}}".into()
+}
+
+fn default_timeout_secs() -> u64 {
+    30
+}
+
+impl {{ProviderName}}Config {
+    /// 从环境变量解析（v0.2：用于覆盖 config 文件）。
+    pub fn resolve_api_key(&self) -> Option<String> {
+        std::env::var("SNAPTEXT_{{PROVIDER_NAME_UPPER}}_KEY")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                if self.api_key.is_empty() {
+                    None
+                } else {
+                    Some(self.api_key.clone())
+                }
+            })
+    }
+}
+
+impl Default for {{ProviderName}}Config {
+    fn default() -> Self {
+        serde_json::from_str(crate::config::DEFAULT_CONFIG_TOML)
+            .ok()
+            .and_then(|c: serde_json::Value| {
+                serde_json::from_value(
+                    c.get("{{provider_name}}").cloned().unwrap_or_default(),
+                )
+                .ok()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// {{ProviderName}} Provider 实现。
+pub struct {{ProviderName}} {
+    client: Client,
+    cfg: {{ProviderName}}Config,
+    api_key: String,
+}
+
+impl {{ProviderName}} {
+    /// 构造。
+    ///
+    /// 失败条件：
+    /// - API key 缺失 → 返回 `CoreError::Config`
+    pub fn new(client: Client, cfg: {{ProviderName}}Config) -> Result<Self, CoreError> {
+        let api_key = cfg.resolve_api_key().ok_or_else(|| {
+            CoreError::Config(format!(
+                "missing API key for {{ProviderName}}: set config or env SNAPTEXT_{{PROVIDER_NAME_UPPER}}_KEY"
+            ))
+        })?;
+
+        Ok(Self { client, cfg, api_key })
+    }
+
+    fn provider_id() -> ProviderId {
+        ProviderId::from_static("{{provider_id}}")
+    }
+}
+
+#[async_trait]
+impl crate::{{module}}::{{TraitName}} for {{ProviderName}} {
+    fn id(&self) -> ProviderId {
+        Self::provider_id()
+    }
+
+    fn supported_pairs(&self) -> &[LangPair] {
+        &[
+            // TODO: 列出实际支持的语言对
+        ]
+    }
+
+    #[instrument(skip(self, req), fields(provider = %Self::provider_id()))]
+    async fn {{method_name}}(
+        &self,
+        req: {{RequestType}},
+    ) -> Result<{{ResponseType}}, CoreError> {
+        let started = std::time::Instant::now();
+
+        // 1. 构造请求
+        let body = self.build_request_body(&req)?;
+        let url = format!("{}/v1/...", self.cfg.base_url.trim_end_matches('/'));
+
+        // 2. 调用（带超时 + 重试）
+        let resp = self.call_with_retry(&url, body).await?;
+
+        // 3. 解析响应
+        let result = self.parse_response(resp).await?;
+
+        info!(
+            latency_ms = started.elapsed().as_millis() as u64,
+            tokens = ?result.usage,
+            "{{provider_name}} call succeeded",
+        );
+
+        Ok(result)
+    }
+}
+
+impl {{ProviderName}} {
+    fn build_request_body(
+        &self,
+        req: &{{RequestType}},
+    ) -> Result<serde_json::Value, {{Module}}Error> {
+        // TODO: 实际请求体构造
+        serde_json::to_value(req)
+            .map_err(|e| {{Module}}Error::Serialization(e.to_string()))
+    }
+
+    async fn call_with_retry(
+        &self,
+        url: &str,
+        body: serde_json::Value,
+    ) -> Result<reqwest::Response, {{Module}}Error> {
+        const MAX_ATTEMPTS: u32 = 3;
+
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+
+            let req_builder = self
+                .client
+                .post(url)
+                .timeout(Duration::from_secs(self.cfg.timeout_secs))
+                .bearer_auth(&self.api_key)
+                .json(&body);
+
+            let result = tokio::time::timeout(
+                Duration::from_secs(self.cfg.timeout_secs + 5),
+                req_builder.send(),
+            )
+            .await;
+
+            match result {
+                Ok(Ok(resp)) if resp.status().is_success() => return Ok(resp),
+                Ok(Ok(resp)) if resp.status().as_u16() == 429 && attempt < MAX_ATTEMPTS => {
+                    let backoff = Duration::from_millis(500 * 2u64.pow(attempt));
+                    warn!(attempt, status = resp.status().as_u16(), backoff_ms = backoff.as_millis() as u64, "rate limited, retrying");
+                    tokio::time::sleep(backoff).await;
+                }
+                Ok(Ok(resp)) => {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    return Err({{Module}}Error::Api {
+                        status: status.as_u16(),
+                        body: text,
+                    });
+                }
+                Ok(Err(e)) => return Err({{Module}}Error::Network(e.to_string())),
+                Err(_) => return Err({{Module}}Error::Timeout),
+            }
+        }
+    }
+
+    async fn parse_response(
+        &self,
+        resp: reqwest::Response,
+    ) -> Result<{{ResponseType}}, {{Module}}Error> {
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| {{Module}}Error::Serialization(e.to_string()))?;
+
+        // TODO: 实际响应解析
+        let translated = json
+            .get("result")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {{Module}}Error::Parse("missing result field".into()))?
+            .to_string();
+
+        let usage = TokenUsage {
+            prompt_tokens: json
+                .get("usage")
+                .and_then(|u| u.get("prompt_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+            completion_tokens: json
+                .get("usage")
+                .and_then(|u| u.get("completion_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+        };
+
+        Ok({{ResponseType}} {
+            translated,
+            detected_source: None,
+            usage,
+            raw: json,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn make_provider(server: &MockServer) -> {{ProviderName}} {
+        let client = Client::new();
+        let cfg = {{ProviderName}}Config {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url: server.uri(),
+            timeout_secs: 5,
+        };
+        {{ProviderName}}::new(client, cfg).unwrap()
+    }
+
+    #[tokio::test]
+    async fn succeeds_on_valid_response() {
+        // Arrange
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/..."))
+            .and(header("authorization", "Bearer test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "你好",
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server);
+
+        // Act
+        let req = {{RequestType}}::default();
+        let resp = provider.{{method_name}}(req).await.unwrap();
+
+        // Assert
+        assert_eq!(resp.translated, "你好");
+        assert_eq!(resp.usage.completion_tokens, 2);
+    }
+
+    #[tokio::test]
+    async fn retries_on_rate_limit() {
+        // Arrange
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/..."))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/..."))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "ok",
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0}
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server);
+
+        // Act
+        let resp = provider.{{method_name}}({{RequestType}}::default()).await;
+
+        // Assert
+        assert!(resp.is_ok());
+    }
+
+    #[tokio::test]
+    async fn fails_on_missing_api_key() {
+        // Arrange
+        let cfg = {{ProviderName}}Config {
+            api_key: String::new(),
+            ..Default::default()
+        };
+
+        // Act
+        let result = {{ProviderName}}::new(Client::new(), cfg);
+
+        // Assert
+        assert!(result.is_err());
+    }
+}

@@ -1,0 +1,485 @@
+# SnapText 设计方案
+
+| 项目 | 内容 |
+|---|---|
+| 文档版本 | v0.2（精简版，砍 ADR / 配置示例 / 目录结构 / 参考资料） |
+| 日期 | 2026-06-25 |
+| 状态 | 已与用户对齐，待实施 |
+| 适用范围 | Windows 11 桌面截图 OCR + 翻译工具 |
+
+> 本文档遵循 `AGENTS.md` 中的开发规范。
+
+---
+
+## 🤖 AI 协作导航（先读这里）
+
+| 顺序 | 文档 | 解决的问题 |
+|---|---|---|
+| 1 | [`../AGENTS.md`](../AGENTS.md) | 用户全局规则（最高优先级） |
+| 2 | [`PROGRESS.md`](PROGRESS.md) | 当前进展到哪一步 |
+| 3 | [`TASKS.md`](TASKS.md) | 可领取的交付单元（DU） |
+| 4 | [`CODE_MAP.md`](CODE_MAP.md) | 改 X 看哪些文件、不能动哪些 |
+| 5 | [`CONVENTIONS.md`](CONVENTIONS.md) | 项目特定强制约定 |
+| 6 | [`AI_GUIDE.md`](AI_GUIDE.md) | 项目特定陷阱 + 实施模式 |
+| 7 | [`GLOSSARY.md`](GLOSSARY.md) | 项目特定术语表 |
+| 8 | 本文档 | 高层设计与完整架构 |
+
+**配置示例**：见 `crates/snaptext-core/src/config.rs` 的 `Default` 实现。
+**目录结构**：见 `CODE_MAP.md`。
+**架构决策**：直接看本文档 §4，无独立 ADR 文件。
+
+### 文档同步铁律
+
+| 代码变更 | 必须更新 |
+|---|---|
+| 新增/删除/重命名文件 | `CODE_MAP.md` |
+| 修改 trait 签名 | `CODE_MAP.md` + 本文档对应章节 |
+| 完成一个 DU | `TASKS.md`（标 [x]）+ `PROGRESS.md` |
+| 改变架构决策 | 直接修改本文档对应章节 |
+| 引入新术语 | `GLOSSARY.md` |
+
+---
+
+## 1. 项目概述
+
+**SnapText** 是一个 Windows 11 桌面工具，提供 Snipaste 风格的截图 → OCR → 翻译一体化体验：
+
+- 用户按下热键 → 屏幕变暗进入选区模式
+- 鼠标框选文本区域 → 本地 OCR 识别
+- 译文以悬浮卡片形式原位显示，可一键复制
+
+**目标用户**：需要频繁阅读外文（英文 / 日文）文档、网页、PDF 的中文用户。
+
+**核心价值**：隐私（OCR 本地）、低成本（默认 DeepSeek）、可控（Provider 可切换）。
+
+---
+
+## 2. 需求摘要
+
+| 维度 | 决策 | 备注 |
+|---|---|---|
+| 目标平台 | Windows 11 x64 | 不支持 Win10 / ARM64 |
+| 使用场景 | 网页 / PDF / 文档普通文本 | 漫画竖排、游戏画面不在范围 |
+| 翻译方向 | 英→中、日→中、日→英 | 主选 |
+| OCR 方案 | 本地 ONNX，PP-OCRv6 **medium + small 两档，默认 medium** | 完全离线 |
+| 翻译方案 | 云 API，默认 DeepSeek；MVP 仅 DeepSeek + DeepL | trait 抽象 |
+| 交互方式 | Snipaste 风格：热键 → 框选 → 悬浮卡 | 热键用户可配置 |
+| 离线能力 | 不强求（联网优先） | OCR 本地，翻译走云 |
+| 历史记录 | MVP 内置 sqlite 写入 | 读取接口随 P1 DU-15 |
+| 分发形态 | 现代 Win11 PC，单 exe + 首启下载模型 | 总磁盘 ~200MB |
+
+---
+
+## 3. 总体架构
+
+### 3.1 模块拓扑
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        SnapText 主进程                            │
+│                                                                  │
+│  ┌──────────────┐                                                │
+│  │ GlobalHotkey │ ──hotkey──┐                                    │
+│  └──────────────┘           │                                    │
+│                             ▼                                    │
+│  ┌──────────────┐    ┌──────────────────────────────────────┐   │
+│  │  TrayIcon    │    │  UI 层 (winit + eframe/egui)          │   │
+│  └──────┬───────┘    │  ├─ 选区 Overlay（全屏置顶）           │   │
+│         │            │  ├─ 译文悬浮卡片                        │   │
+│         │            │  └─ 设置面板（P1）                      │   │
+│         │            └────────────┬───────────────────────────┘   │
+│         │                         │ mpsc                            │
+│         │                         ▼                                │
+│         │            ┌──────────────────────────────────────┐    │
+│         │            │  Orchestrator (tokio mpsc 状态机)     │    │
+│         │            │  Idle → Selecting → Recognizing      │    │
+│         │            │       → Translating → Showing        │    │
+│         │            └──┬─────────┬──────────┬─────────┬─────┘    │
+│         │               ▼         ▼          ▼         ▼          │
+│         │         ┌────────┐ ┌─────────┐ ┌────────┐ ┌────────┐   │
+│         │         │Capture │ │  OCR    │ │Trans-  │ │History │   │
+│         │         │Provider│ │Provider │ │lation  │ │(sqlite)│   │
+│         │         │ trait  │ │ trait   │ │Provider│ │        │   │
+│         │         └───┬────┘ └────┬────┘ │ trait  │ └────────┘   │
+│         │             │           │      └────┬───┘               │
+│         │             ▼           ▼           ▼                   │
+│         │     windows-capture  oar-ocr     reqwest                │
+│         │     (WGC / DXGI)    (ort +      (OpenAI 兼容            │
+│         │                     PP-OCRv6    + DeepL)                │
+│         │                     ONNX)                               │
+│         │                                                          │
+│         └─ Clipboard (arboard)                                     │
+└──────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                  %APPDATA%\SnapText\
+                  ├─ config.toml
+                  ├─ history.db          (sqlite)
+                  └─ logs\snaptext.log
+
+  模型（便携，跟 exe 同级）：<exe 目录>\models\ppocr\v6\{tier}\{det,rec}.onnx + dict.txt
+```
+
+### 3.2 进程与线程模型
+
+**单进程**，内嵌一个多线程 `tokio` runtime：
+
+| 线程 | 职责 | 关键约束 |
+|---|---|---|
+| Main thread | `winit` 事件循环 + egui 渲染 | Win32 消息循环必须在此线程 |
+| Tokio worker × N | HTTP 调用、文件 IO、调度 | 默认 `num_cpus` 个 |
+| `spawn_blocking` | ONNX 推理（CPU 密集） | 不阻塞 reactor |
+| GlobalHotkey 线程 | `global-hotkey` 内部线程 | 通过 channel 通知主线程 |
+
+**跨线程通信**：
+- UI → Orchestrator：`tokio::sync::mpsc`
+- Orchestrator → UI：`std::sync::mpsc` 或 `crossbeam-channel`
+- sqlite 访问：`Arc<r2d2::Pool>`
+
+### 3.3 核心状态机
+
+```
+        hotkey pressed                       mouse up
+  ┌─────────────────────┐  esc   ┌──────────────────────┐
+  │                     │        │                      │
+  ▼                     │        ▼                      │
+Idle ─────hotkey─────▶ Selecting ─────mouse_up─────▶ Recognizing
+  ▲                     │                            │     │
+  │                     │ esc                        │     │ ocr done
+  │                     ▼                            │     ▼
+  │                  Idle ◀──────────click close───── Showing
+  │                                                   │
+  └───────────────────esc / hotkey again──────────────┘
+```
+
+---
+
+## 4. 技术栈选型（含决策理由）
+
+### 4.1 总览
+
+| 层 | 选型 | 决策理由 |
+|---|---|---|
+| 截图 | `windows-capture` | 双 API（WGC + DXGI），多显示器 + per-window 支持 |
+| UI | `winit` + `eframe` (egui) | 纯 Rust、即时模式、单二进制；CrabGrab 验证可行 |
+| OCR 推理 | ONNX Runtime (`ort`) | 官方 PP-OCRv6 格式直接支持，Windows 打包最轻，CPU 性能稳 |
+| OCR 封装 | **oar-ocr 优先；DU-04 内验证失败则同任务切 ort 自实现** | 避免第三方小众 crate 风险；trait 抽象保证切换零成本 |
+| OCR 模型 | PP-OCRv6 medium + small 两档 | medium 精度最高，small 兼顾速度；详见 §5.2 |
+| 翻译 SDK | `reqwest` + Provider trait | 统一抽象、统一重试/超时 |
+| 热键 | `global-hotkey` | 不引入 Tauri，依赖轻 |
+| 托盘 | `tray-icon` | tauri-apps 官方维护 |
+| 剪贴板 | `arboard` | 跨平台 + 1Password 维护 |
+| 异步运行时 | `tokio` | 生态最广 |
+| HTTP | `reqwest` + `rustls` | 避免 OpenSSL 依赖 |
+| 序列化 | `serde` + `toml` + `serde_json` | 标配 |
+| 错误处理 | `anyhow`（应用）+ `thiserror`（库 trait） | 标配 |
+| 日志 | `tracing` + `tracing-subscriber` | 异步友好，span 追踪 |
+| 数据库 | `rusqlite` + `r2d2_sqlite` | 同步 + 连接池，适合桌面 |
+| 打包 | `cargo-wix`（MSI） | MSI + 代码签名专业级 |
+
+### 4.2 OCR 后端选型证据（PP-OCRv6_small, Intel Xeon 8350C, CPU）
+
+| 后端 | 单图延迟 | Windows 打包 | v6 支持 | 结论 |
+|---|---|---|---|---|
+| **ONNX Runtime** | 0.61s | onnxruntime.dll ~25MB | ✅ 官方格式 | **采用** |
+| OpenVINO | 0.59s（仅 Intel 略快） | Runtime 包大，AMD 弱 | 需转换 | 不采用 |
+| MNN / NCNN | 慢于 ORT / x86 慢 2x | 静态库膨胀 | ❌ 官方未导出 | 不采用 |
+| Paddle Inference | 0.79s | 动态库 >2GB | ✅ 原生 | 不采用（部署过重） |
+
+### 4.3 翻译 Provider 选型
+
+**MVP 范围（仅 2 个）**：
+
+| Provider | 类型 | 默认 | 用途 |
+|---|---|---|---|
+| **DeepSeek** | LLM (OpenAI 兼容) | ✅ | 性价比之王，¥1/百万输入 token |
+| **DeepL** | 专用 MT | — | 免费额度内质量天花板 |
+
+**P2 扩展**（trait 已设计好）：OpenAI / Microsoft Azure / Baidu
+
+**DeepSeek 默认模型**：`deepseek-chat`（V3 通用模型，官方确认存在）。
+> 原 DESIGN 设想的 `deepseek-v4-flash` 不存在（R9），DU-05 实测 API 报 model not found 后已切换到 `deepseek-chat`。
+
+---
+
+## 5. 关键模块设计
+
+### 5.1 截图（Capture）
+
+```rust
+#[async_trait]
+pub trait CaptureProvider: Send + Sync {
+    async fn list_monitors(&self) -> Result<Vec<MonitorInfo>, CoreError>;
+    async fn capture_monitor(&self, id: &MonitorId) -> Result<CapturedFrame, CoreError>;
+    async fn capture_all(&self) -> Result<Vec<CapturedFrame>, CoreError>;
+}
+```
+
+**默认实现**：`WindowsCaptureProvider`（WGC 优先 + DXGI fallback）。
+
+**关键设计**：热键触发后**立即**对所有显示器各捕获一帧（<50ms），缓存到内存。选区 Overlay 直接把这帧绘制为背景，避免选区过程中屏幕内容变化。
+
+### 5.2 OCR
+
+```rust
+#[async_trait]
+pub trait OcrProvider: Send + Sync {
+    fn id(&self) -> ProviderId;
+    fn supported_languages(&self) -> &[Lang];
+    async fn recognize(&self, img: &image::DynamicImage, lang: Lang) -> Result<Vec<OcrLine>, CoreError>;
+}
+
+pub struct OcrLine {
+    pub text: String,
+    pub bbox: Bbox,
+    pub confidence: f32,
+    pub writing_direction: WritingDirection,
+}
+```
+
+**默认实现**：`PaddleOcrProvider`，委托 `oar-ocr` crate（如不可用同 DU 内切自实现 ort 管线）。
+
+**档位支持**（详见 §4.1）：
+
+| Tier | 单图 OCR（Intel Xeon, CPU） | 模型磁盘 | 内存峰值 | 含日文 |
+|---|---|---|---|---|
+| **medium**（默认） | ~3s | ~133MB | ~500MB | ✅ |
+| small | ~0.6s | ~30MB | ~200MB | ✅ |
+
+**模型路径**：`%APPDATA%\SnapText\models\ppocrv6\{tier}\{det,rec}.onnx`
+
+**关键约束**：`ort::Session` 不是默认 Send，必须用 `Arc<Mutex<Session>>` 包装。详见 `AI_GUIDE.md §3.1`。
+
+### 5.3 翻译（Translate）
+
+```rust
+#[async_trait]
+pub trait TranslationProvider: Send + Sync {
+    fn id(&self) -> ProviderId;
+    fn supported_pairs(&self) -> &[LangPair];
+    async fn translate(&self, req: TranslateRequest) -> Result<TranslateResponse, CoreError>;
+}
+
+pub struct TranslateRequest {
+    pub text: String,
+    pub source: Lang,
+    pub target: Lang,
+    pub context_hint: Option<String>,
+    pub glossary: Option<HashMap<String, String>>,
+}
+```
+
+**MVP 实现（仅 2 个）**：
+1. `OpenAiCompatProvider`（默认，含 DeepSeek）— 走 OpenAI 兼容 `/v1/chat/completions`
+2. `DeepLProvider` — 走 DeepL REST API
+
+**LLM 类 Provider 共用 prompt 模板**（`translate/prompt.rs`）：
+```
+Translate the following text from {source} to {target}.
+Output ONLY the translation. No explanations, no quotes, no notes.
+
+Text:
+{input}
+```
+
+**通用功能**：超时（LLM 30s，专用 MT 10s）+ 指数退避重试 2 次 + Token usage 解析。
+
+**流式输出**：MVP 不启用（用户决策），等整段返回再渲染。
+
+### 5.4 选区 Overlay（Snipaste 风格）
+
+**生命周期**：
+1. 热键 → Orchestrator 调用 `capture_all`
+2. 为每个显示器创建 borderless fullscreen topmost window，绘制截图 + 50% 蒙版
+3. 鼠标拖拽画矩形 → 实时刷新（蒙版还原矩形内 + 显示尺寸）
+4. 鼠标抬起 → crop → 投递 OCR
+5. OCR 完成 → 翻译 → 显示悬浮卡片 → overlay 切换为 click-through
+
+**透明度处理**：选区阶段 `set_cursor_hittest(true)`（接收鼠标），显示卡片后 `set_cursor_hittest(false)`（穿透到下层）。
+
+### 5.5 Orchestrator
+
+```rust
+pub enum Command {
+    TriggerCapture,
+    RegionSelected(MonitorId, Bbox),
+    Cancel,
+    RetryTranslate(ProviderId),
+    CopyToClipboard(String),
+    UpdateTranslateConfig(TranslateConfig), // 设置保存后即时重建翻译 Provider
+    UpdateTargetLang(Lang),                 // 即时切换翻译目标语言
+    Shutdown,
+}
+
+pub enum Event {
+    Captured(Vec<CapturedFrame>),
+    OcrProgress(OcrProgress),
+    OcrDone(Vec<OcrLine>),
+    TranslateDone(TranslateResponse),
+    Error(CoreError),
+    StateChanged(AppState),
+}
+```
+
+**翻译降级与即时生效**：`Orchestrator.translate` 为 `Option<Arc<dyn TranslationProvider>>`——启动时缺 API Key 则为 `None`（翻译时回 `Error` 提示去设置，不阻塞截图/OCR/设置面板）。设置面板/引导页保存后发 `UpdateTranslateConfig`，Orchestrator 调 `build_provider` 即时重建（无需重启）；`UpdateTargetLang` 即时切目标语言。
+```
+
+### 5.6 历史记录（History）
+
+**MVP 仅写入接口**，读取接口随 P1 DU-15 实现。
+
+`%APPDATA%\SnapText\history.db` (sqlite)，schema：
+
+```sql
+CREATE TABLE translation_history (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at      TEXT NOT NULL,
+    source_lang     TEXT NOT NULL,
+    target_lang     TEXT NOT NULL,
+    original_text   TEXT NOT NULL,
+    translated_text TEXT NOT NULL,
+    provider        TEXT NOT NULL,
+    model           TEXT,
+    prompt_tokens   INTEGER,
+    completion_tokens INTEGER,
+    total_cost_cny_milli INTEGER,
+    monitor_id      TEXT, bbox_x INTEGER, bbox_y INTEGER,
+    bbox_w INTEGER, bbox_h INTEGER, notes TEXT
+);
+CREATE INDEX idx_history_created ON translation_history(created_at DESC);
+```
+
+详见 `CODE_MAP.md` history 模块。
+
+### 5.7 模型管理
+
+首次启动从 ModelScope 下载（`greatv/oar-ocr` 仓库，国内直连），含 SHA256 校验。
+URL：`https://www.modelscope.cn/models/greatv/oar-ocr/resolve/master/pp-ocrv6_{tier}_{det,rec}.onnx` + `ppocrv6_dict.txt`（v6 模型仅 ModelScope 有；oar-ocr GitHub Releases 仅 v3-v5）。
+本地目录：可执行文件同级的 `models\ppocr\v6\{tier}\`（**便携模式**，模型跟程序走；`v6` 段隔离历史版本）。开发运行时位于 `target\{debug,release}\models\`，安装后位于安装目录。⚠️ 安装目录须可写——勿装到 `Program Files`，否则首启下载会因普通用户无写权限而失败。
+
+### 5.8 UI 层（美化重构）
+
+**浅色主题**（`ui/theme.rs`）：固定浅色（不做主题切换）。配色常量 + `apply(ctx)` 设 egui `Visuals`/`Style` + `card_frame(style)` 统一分组容器；`main.rs` creation context 调用，所有 egui 控件自动应用。
+
+**译文卡片独立 viewport**（`ui/card.rs`）：always-on-top 无边框 OS 窗口，定位到选区右下角（近屏边翻向），固定显示（`ViewportCommand::OuterPosition(base_pos)` 每帧维持）。每次翻译用递增 `ViewportId` 重新定位；状态跨帧 `Arc<Mutex<CardState>>`。
+
+**设置面板独立 viewport + 左侧导航**（`ui/settings.rs`）：OS 原生标题栏（拖动/缩放交给 Windows）+ `SidePanel::left`（8 分类）+ `CentralPanel` 分组卡片。草稿机制：编辑 `Arc<Mutex<SettingsState>>` 副本，保存时主程序写回 config + 下发 Orchestrator；API Key 密码框。
+
+**关键决策**：卡片/设置用 deferred viewport（独立 OS 窗口）而非 `egui::Window`（受主窗口裁剪）；可变状态用 `Arc<Mutex>` 共享进 deferred 闭包（闭包要 `Send + 'static`，不能直接 `&mut Config`）；手动拖动 viewport 会因坐标正反馈闪烁，故设置用 OS 原生标题栏（关闭检测 `ViewportEvent::Close`）、卡片固定不拖。历史面板 + 关窗最小化逻辑推迟到阶段 4。
+
+---
+
+## 6. 数据流（一次完整调用）
+
+```
+[User] Ctrl+Alt+Q
+   │
+   ▼
+[Hotkey thread] send(TriggerCapture) ──▶ [Orchestrator]
+                                                      │
+                                       CaptureProvider::capture_all
+                                                      │
+                                                      ▼
+                                          [UI] spawn overlay windows
+                                                      │
+                                          user drags rect, mouse_up
+                                                      │
+                                                      ▼
+                                       RegionSelected(monitor, bbox)
+                                                      │
+                                                      ▼
+                                           crop(cached_img, bbox)
+                                                      │
+                                                      ▼
+                                spawn_blocking ─▶ oar_ocr::recognize
+                                                      │
+                                                 ort::Session::run
+                                                      │
+                                                      ▼
+                                                Vec<OcrLine>
+                                                      │
+                                                      ▼
+                                  TranslationProvider::translate (async)
+                                                      │
+                                                      ▼
+                                           TranslateResponse
+                                                      │
+                                  ┌───────────────────┤
+                                  ▼                   ▼
+                          [UI] render card    [History] INSERT (async)
+                                  │
+                                  ▼
+                       Clipboard::set_text (if auto_copy)
+```
+
+---
+
+## 7. P0/P1/P2 优先级路线图
+
+**取消版本号规划**（原 v0.1/v0.2/v0.3/v1.0 改为优先级）。AI 协作时按 P0 → P1 → P2 顺序连续推进，每个 P 完成都有可用版本。
+
+### P0（必做，发布门槛）— 13 DU
+
+DU-01 ~ DU-13。详见 `TASKS.md`。完成即可发布首个可用版本。
+
+### P1（应做，完整体验）— 3 DU
+
+- DU-14：设置 GUI 面板（精简版：热键 / Provider 切换 / tier 运行时切换 / API Key / 4 UI 开关）
+- DU-15：历史记录 GUI（精简版：列表 + 搜索 + 单删 + 清空）+ 读取接口
+- DU-16：OCR + 译文后处理（去空格 / 合并换行 / 标点修正）
+
+P1 三个 DU 可并行。完成即发布"完整体验"版本。
+
+### P2（可做，扩展与工业级）— 4 DU
+
+- DU-17：DeepSeek 故障自动转移
+- DU-18：OpenAI / MS / Baidu Provider
+- DU-19：代码签名 + MSI 自动更新（个人用可跳过）
+- DU-20：GPU 加速（DirectML EP，按需）
+
+P2 各 DU 相对独立，根据用户实际需求选择做或不做。
+
+### 永久砍除（不列入路线图）
+
+| DU | 功能 | 砍除理由 |
+|---|---|---|
+| DU-22 | 术语表生效 | 小众需求 |
+| DU-23 | 模型下载断点续传 | 用户未选 |
+| DU-25 | API Key 加密存储 | 个人过度工程（Windows ACL 已够） |
+| DU-26 | 日文竖排 | 用户主场景不含漫画 |
+| DU-28 | 持续监控模式（字幕跟随） | 偏离核心定位 |
+
+### 推进策略
+
+- AI 按 P0 → P1 → P2 顺序连续推进，无版本阻断
+- 任何时候停止都有可用版本
+- 单 AI 串行：~14-15 次会话完成全部 20 DU
+- 多 AI 并行：~8-10 次串行阶段
+
+---
+
+## 8. 风险与未决项
+
+| # | 风险 | 当前方案 | 验证 DU |
+|---|---|---|---|
+| R1 | `oar-ocr` crate 真实性 | DU-04 内同任务验证 + 失败同任务切自实现 | DU-04 |
+| R2 | `ort` Windows MSVC 链接 | `load-dynamic` feature，运行时加载 DLL | DU-01/04 |
+| R3 | PP-OCRv6_medium 单图 ~3s 延迟 | UI 进度文字 + 用户可切 small 档 | DU-12 |
+| R5 | egui 全屏 Overlay 多显示器 + 高 DPI 对齐 | MVP 限单显示器内选区 | DU-08 |
+| R6 | WGC 首次启动触发 Win11 屏幕捕获权限提示 | 文档说明 + 引导用户允许 | 不可避免 |
+| R7 | HuggingFace 在国内不稳定 | DU-03 多源下载（HF + 阿里云 + Gitee） | DU-03 |
+| R9 | `deepseek-v4-flash` 模型名未确认 | **DU-05 内如失败立即切 `deepseek-chat`** | DU-05 |
+| R10 | 单实例运行（防止多开冲突 hotkey） | `single-instance` crate | DU-07 |
+| R11 | DeepSeek 限流故障转移 | P2 DU-17；MVP 手动切 | DU-17 |
+
+---
+
+## 9. P0 验收标准
+
+- 在 1920×1080 Win11 上，从热键到译文显示总耗时 ≤ 5 秒（PP-OCRv6_medium + DeepSeek）
+- 安装包 < 100MB
+- 模型缓存：medium ~133MB（如同时装 small 则 +30MB）
+- 内存峰值 < 1GB
+- 连续 100 次框选：0 崩溃，内存增长 < 50MB
+- 编译警告：0
+- 测试覆盖：核心模块 ≥ 70%
