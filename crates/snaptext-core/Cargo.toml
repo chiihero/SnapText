@@ -1,0 +1,30 @@
+[package]
+name = "snaptext-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+image = { workspace = true }
+dirs = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+# Windows 截图：WGC（Graphics Capture API）+ DXGI Desktop Duplication（见 DU-02）。
+windows-capture = "2.0"
+# 模型下载与校验（DU-03）
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+futures-util = { workspace = true }
+oar-ocr = "0.7.1" # PP-OCRv6 需 0.7+（0.6.3 仅支持 v5）
+rusqlite = { version = "0.32", features = ["bundled"] }
+r2d2_sqlite = "0.25"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+r2d2 = "0.8.10"
+
+[dev-dependencies]
+tempfile = "3"
