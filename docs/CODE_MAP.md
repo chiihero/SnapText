@@ -2,7 +2,7 @@
 
 > 给 AI 用：快速定位"改 X 看哪里"、"动 A 影响哪些 B"、"哪些文件禁止碰"。
 
-最后更新：2026-06-26（模型便携化：model_root 改为 exe 同级 `models/`；下载失败清理 `.part`；DESIGN §4.3 deepseek-chat 同步；2 个环境耦合测试改为自包含）
+最后更新：2026-06-27（架构迁移：egui → Tauri 2 + Vue 3 + Naive UI。删 `crates/snaptext-app`、`wix/`、`build-msi.ps1`；新增 `src-tauri/`（Rust 后端，命令层 + 系统集成）+ `src/`（Vue 前端）。core 100% 复用。译文图上原位覆盖、历史 V002、行级译文逻辑从旧 orchestrator 搬到 `src-tauri/commands/`。**补集成测试**：核心管线抽成纯函数 `run_ocr_translate`，用 mock Provider 覆盖端到端（取代随 crate 删除丢失的 orchestrator full_pipeline）；src-tauri 测试 6→18。**修白屏**：Naive UI 组件未注册导致页面空白，加 `unplugin-vue-components` + `NaiveUiResolver` 按需自动注册）
 
 ## 文件状态图例
 
@@ -18,20 +18,24 @@
 
 ```
 SnapText/
-├── Cargo.toml                  🟢 workspace 根
+├── Cargo.toml                  🟢 workspace 根（members: snaptext-core + src-tauri）
 ├── Cargo.lock                  🟢
-├── rust-toolchain.toml         🟢 stable + MSVC
-├── README.md                   🟡 骨架（DU-13 完善）
+├── rust-toolchain.toml         🟢 stable（1.80+）
+├── package.json                🟢 前端依赖 + 脚本（vite/tauri）
+├── vite.config.ts              🟢 前端构建（dev port 1420；Naive UI 按需引入 unplugin-vue-components + NaiveUiResolver）
+├── tsconfig.json               🟢 前端类型
+├── index.html                  🟢 前端入口
+├── README.md                   🟡 骨架
 ├── LICENSE                     🟢 MIT
 ├── AGENTS.md                   🔒 项目规范（人工维护）
-├── .gitignore                  🟢
+├── .gitignore                  🟢（含 node_modules/dist/src-tauri）
 ├── docs/                       本文档目录
 ├── crates/
-│   ├── snaptext-core/          🟡 库 crate（DU-01 已完成；后续 DU 扩展 capture/ocr/translate/history/model_manager）
-│   └── snaptext-app/           🟡 二进制 crate（DU-01 已完成；后续 DU 扩展 orchestrator/ui/tray/hotkey/clipboard）
-├── scripts/                    🔴 辅助脚本（DU-13）
-└── wix/                        🔴 cargo-wix 模板（DU-13）
+│   └── snaptext-core/          🟢 库 crate（纯逻辑层，100% 复用）
+├── src-tauri/                  🟢 Tauri 2 二进制（Rust 后端：命令层 + 系统集成）
+└── src/                        🟢 Vue 3 前端（Naive UI）
 ```
+
 
 ---
 
@@ -131,12 +135,15 @@ pub enum CoreError {
 |---|---|---|---|
 | `mod.rs` | `HistoryStore` trait + `HistoryRecord` / `HistoryStats` | `trait HistoryStore`, `HistoryRecord` | `types`, `async-trait` |
 | `sqlite_store.rs` | sqlite + r2d2 连接池（size 5）实现 | `SqliteHistoryStore::open/open_default/cleanup_blocking` | `rusqlite`, `r2d2_sqlite`, `r2d2`, `dao`, `migration`, `chrono` |
-| `dao.rs` | CRUD（P0 `insert` + `cleanup`） | `dao::insert`, `dao::cleanup` | `rusqlite`, `chrono` |
+| `dao.rs` | CRUD（`insert`/`list`/`search`/`cleanup`/`delete_by_id`/`clear_all`） | `dao::insert`, `dao::list`, `dao::delete_by_id`, `dao::clear_all` | `rusqlite`, `chrono`, `serde_json` |
 | `schema.sql` | DDL（DESIGN §5.6） | 资源文件 | — |
-| `migration.rs` | `PRAGMA user_version` 迁移 | `run_migrations` | `rusqlite` |
+| `migration.rs` | `PRAGMA user_version` 迁移（TARGET_VERSION=2） | `run_migrations` | `rusqlite` |
 | `migrations/V001__initial.sql` | 初始迁移脚本 | 资源文件（include_str） | — |
+| `migrations/V002__image_and_lines.sql` | 加 `screenshot_png`/`ocr_lines_json`/`line_translations_json` | 资源文件（include_str） | — |
 
-**约定**：连接池 size 5，读写均 `spawn_blocking`。`insert`/`list`/`stats`/`delete_before`/`cleanup` 已实现（DU-06 + DU-15）。清理（retention_days + max_records）由 Orchestrator 启动时调 `cleanup_blocking`。
+**约定**：连接池 size 5，读写均 `spawn_blocking`。`insert`/`list`/`search`/`stats`/`delete_before`/`delete_by_id`/`clear_all`/`cleanup` 已实现（DU-06 + DU-15）。清理（retention_days + max_records）由 Orchestrator 启动时调 `cleanup_blocking`。
+
+**HistoryRecord 字段**（V002 扩展）：基础文本字段 + `bbox` + V002 新增 `screenshot_png: Option<Vec<u8>>`（选区截图 PNG）、`ocr_lines: Option<Vec<OcrLine>>`（行级 OCR，含 bbox）、`line_translations: Option<Vec<String>>`（与 ocr_lines 按索引配对的逐行译文）。三者配合译文图上原位覆盖与历史面板回看。`id: i64`（主键，insert 时 0，list 读回填充）。
 
 ### src/model_manager/ 🟢
 
@@ -161,84 +168,73 @@ pub enum CoreError {
 
 ---
 
-## crates/snaptext-app/
+## src-tauri/ 🟢（Tauri 2 二进制：Rust 后端）
 
-二进制 crate。包含 main、UI、调度、系统集成。
+Tauri 应用后端。命令层包装 `snaptext-core` 的 Provider，系统集成（托盘/热键/单实例/剪贴板），窗口管理。**取代旧 egui 的 orchestrator + ui + hotkey + tray + clipboard 全部**。
 
-### src/main.rs 🟢（DU-07 骨架 + DU-11 集成 orchestrator 端到端）
-### src/first_run.rs 🟢（DU-11：模型缺失时同步下载，eprintln 进度）
+### src/main.rs 🟢
 
-入口。职责：
-1. 初始化 `tracing`
-2. 加载 `Config`
-3. 启动 tokio runtime
-4. 创建 Orchestrator channel
-5. 启动 `global-hotkey` 监听
-6. 启动 `tray-icon`
-7. 进入 `eframe` 事件循环（**主线程**）
+`tauri::Builder` 入口。职责：
+1. 注册插件（single-instance / global-shortcut / clipboard-manager / dialog）
+2. `setup`：初始化 tracing → ensure_models（首启下载）→ 构造共享 `reqwest::Client` → `AppState::build` → `manage` → 注册全局热键 → 构建托盘
+3. `invoke_handler`：注册全部 `#[tauri::command]`
 
-**不要** 在 main 里写业务逻辑。所有复杂度进 `orchestrator.rs` 或 UI 层。
+### src/state.rs 🟢
 
-**降级启动**：翻译 Provider 缺 API Key 时不再 `exit(1)`，构造为 `None` + warn 日志，程序照常启动；首启 `!onboarding_completed` 时把 `onboarding_open=true` 传入 UI 触发引导页。
+`AppState`（`app.manage` 注入，命令用 `State<'_, AppState>` 取用）。持有 `Arc<dyn CaptureProvider>`、`Arc<dyn OcrProvider>`、`Mutex<Option<Arc<dyn TranslationProvider>>>`、`Arc<dyn HistoryStore>`、`Mutex<Config>`、`reqwest::Client`、`Mutex<Vec<CapturedFrame>>`（截图缓存）。**取代旧 Orchestrator 的 Provider 持有角色**——Tauri 命令直接读 state 调 Provider，无 channel。
 
-### src/logging.rs 🟢
+### src/commands/ 🟢
 
-`tracing` + `tracing-subscriber` 初始化。
-
-| API | 用途 |
-|---|---|
-| `fn init() -> Result<()>` | 初始化全局订阅，双输出（stderr + `%APPDATA%\SnapText\logs\snaptext.log`） |
-
-**约束**：用 `dirs::config_dir()` 解析路径（AI_GUIDE §3.7），不硬编码。默认级别 `info`，`RUST_LOG` 可覆盖。
-
-### src/orchestrator.rs 🟡（DU-10 核心完成 + mock 测试；DU-11 集成 main；缺 Key 降级 + 运行时重建）
-
-中央协调器，持有 Provider（`Arc<dyn ...>`）+ channel。
-
-| 类型 | 职责 |
-|---|---|
-| `struct Orchestrator` | 状态机主体，`handle` + `run`（tokio task） |
-| `enum Command` | UI/Hotkey → Orchestrator 命令（含 `UpdateTranslateConfig` / `UpdateTargetLang` 即时生效） |
-| `enum Event` | Orchestrator → UI 事件 |
-
-**关键事实**（DU-10）：核心流程 TriggerCapture→Captured→RegionSelected→crop→OCR→Translate→History 已实现并 mock 测试通过。clipboard auto_copy / RetryTranslate 接入后续。
-
-**翻译降级 + 运行时重建**：`translate: Option<Arc<dyn TranslationProvider>>`——缺 API Key 时为 `None`（翻译发 `Error` 提示去设置，不阻塞截图/OCR/设置面板）；另持 `translate_config` + `client`，收到 `UpdateTranslateConfig` 调 `rebuild_translate()` 即时重建。`UpdateTargetLang` 即时切目标语言。
-
-**依赖**：`Arc<dyn CaptureProvider>`, `Arc<dyn OcrProvider>`, `Option<Arc<dyn TranslationProvider>>`, `Arc<dyn HistoryStore>`, `TranslateConfig`, `reqwest::Client`, channel。
-
-### src/hotkey.rs 🟢
-
-`global-hotkey` 封装。
-
-| API | 用途 |
-|---|---|
-| `fn register(cfg: &HotkeyConfig) -> Result<(GlobalHotKeyManager, HotKey)>` | 注册触发热键，返回 manager 与已注册 HotKey |
-| `fn re_register(manager: &GlobalHotKeyManager, old: HotKey, cfg: &HotkeyConfig) -> Result<HotKey>` | 运行时切换热键（设置保存后即时生效；先注册新再注销旧） |
-
-**陷阱**：`global-hotkey` 在 Windows 上要求消息循环在主线程。egui 的 event loop 已经是消息循环，需要把 `GlobalHotKeyEvent::receiver().try_recv()` 集成到 egui 的 `ctx.run` 回调里。
-
-### src/tray.rs 🟢
-
-`tray-icon` 封装。同样要求主线程消息循环。菜单项：显示 / 暂停 / 设置 / 历史 / 退出。
-
-### src/clipboard.rs 🟢
-
-`arboard` 封装。注意 Windows 上 clipboard 操作必须在主线程（或拥有窗口的线程）。**不要** 在 tokio worker 线程直接调 `Clipboard::set_text`，要发命令给主线程。
-
-### src/ui/ 🟢（DU-07/11 SnapTextApp；DU-08 overlay；DU-09 card 独立 viewport；DU-14 设置独立窗口+左侧导航；浅色主题 theme.rs）
-
-| 文件 | 职责 | egui 关键 API |
+| 文件 | 命令 | 包装的 core API |
 |---|---|---|
-| `mod.rs` | `SnapTextApp`（实现 `eframe::App`） | `eframe::App` trait |
-| `fonts.rs` 🟢 | 中文字体注入（运行时读 Windows `msyh.ttc`/`simhei.ttf`，ab_glyph 预校验后注入 egui 字体族，避免中文乱码） | `FontDefinitions`, `FontData`, `ctx.set_fonts` |
-| `theme.rs` 🟢 | 浅色主题（配色常量 + `apply(ctx)` 设 visuals/style + `card_frame` 分组容器；`main.rs` creation context 调用） | `ctx.set_visuals`, `ctx.set_style`, `Frame::group` |
-| `overlay.rs` 🟢 | 选区 Overlay（全屏置顶 Viewport + 帧背景纹理 + 50% 蒙版 + 鼠标框选 + Esc 取消） | `show_viewport_deferred`, `Painter`, `interact_pos`, `Arc<Mutex<OverlayState>>` |
-| `card.rs` 🟢 | 译文悬浮卡片（独立 always-on-top viewport，跟随选区位置 / 近屏边翻向 / 固定显示；原文折叠 + 复制译文/原文/关闭） | `show_viewport_deferred`, `ViewportCommand::OuterPosition`, `Arc<Mutex<CardState>>` |
-| `settings.rs` 🟢 | 设置面板（独立 viewport：OS 原生标题栏 + 左侧导航 8 分类 + 右侧分组卡片；API Key 密码框；草稿机制 `Arc<Mutex<SettingsState>>`，保存写回 + 即时下发；关闭 = `send_viewport_cmd(Close)` + outcome 轮询双路，与 card/overlay 对称） | `show_viewport_deferred`, `SidePanel::left`, `ScrollArea`, `card_frame`, `ViewportCommand` |
-| `onboarding.rs` 🟢 | 首次启动引导页（热键/引擎/Key/档位/目标语言；完成/跳过后标记 `onboarding_completed`） | `egui::Window`, `ComboBox` |
-| `history_view.rs` | 历史记录面板（P1, DU-15，精简版） | `egui::ScrollArea` |
-| `updater.rs` | 自动更新（P2, DU-19） | HTTP + 签名校验 |
+| `mod.rs` | 模块导出 | — |
+| `config_cmd.rs` | `get_config` / `save_config`（写盘+重建 Provider+重注册热键）/ `check_translate_ready` | `Config::load/save`、`build_provider` |
+| `models.rs` | `models_ready` / `download_models`（后台线程+专用 runtime，进度经 `download-progress` 事件推送） | `model_manager::is_models_ready`、`downloader::download_models` |
+| `capture.rs` | `capture_all`（截全屏+缓存帧+写临时 PNG+返回 `MonitorDto`）/ `save_image_copy`（复制结果图到目标路径） | `CaptureProvider::capture_all` |
+| `ocr_translate.rs` | `select_region`（选区→crop→OCR→翻译→`align_lines` 配对→写历史→返回 `SelectResult`）；核心管线抽成纯函数 `run_ocr_translate`（不依赖 Tauri，便于 mock 测试） | `OcrProvider::recognize`、`TranslationProvider::translate`、`HistoryStore::insert` |
+| `history.rs` | `history_list` / `history_search` / `history_get_screenshot`（base64 data URL）/ `history_delete` / `history_clear` / `history_stats`；`to_dto` 纯函数剥离 `screenshot_png` 二进制 | `HistoryStore::list/search/delete_by_id/clear_all/stats` |
+
+**关键约束**（迁移自探索）：`CapturedFrame`/`DynamicImage` 不可序列化，截图与裁剪在 Rust 内完成，前端只收元数据 + 图片路径（前端 `convertFileSrc` 转 webview URL）。`HistoryRecord.screenshot_png` 二进制走单独 `history_get_screenshot`（base64）。
+
+**可测性设计**：`run_ocr_translate`（OCR→翻译→配对核心管线）、`align_lines`（行级配对）、`crop_frame`（坐标换算）、`to_dto`（历史 DTO 转换）均为不依赖 Tauri 的纯函数，用 mock Provider 集成测试覆盖。src-tauri 共 18 个测试：6 `align_lines` 边界 + 6 管线/crop 集成（取代旧 orchestrator full_pipeline）+ 4 history DTO + 2 capture 文件复制。
+
+### src/window.rs 🟢
+
+窗口管理 + 托盘：
+- `open_capture_window` / `trigger_capture`：选区窗口（全屏无边框置顶透明，加载 `index.html#/capture`）
+- `open_panel`：设置/历史窗口（普通窗口，已存在则聚焦）
+- `build_tray`：系统托盘（显示/设置/历史/退出），用 Tauri 原生 `TrayIconBuilder` + `Menu`
+
+### tauri.conf.json / capabilities/default.json 🟢
+
+- `tauri.conf.json`：主窗口定义（label=main, `index.html#/home`）、前端指向（devUrl:1420 / frontendDist:../dist）、打包（nsis+msi）
+- `capabilities/default.json`：权限集（窗口创建/关闭/聚焦、webview、event、global-shortcut、clipboard、dialog）
+
+---
+
+## src/ 🟢（Vue 3 前端，Naive UI）
+
+多窗口共用一套路由表，靠 hash 路由（`#/home`/`#/settings`/`#/history`/`#/capture`/`#/result`）区分窗口内容。
+
+| 文件 | 职责 |
+|---|---|
+| `main.ts` | createApp + Pinia + router + 全局样式 |
+| `App.vue` | n-config-provider（中文 locale）+ message/dialog provider + router-view |
+| `api.ts` | 所有 Tauri 命令的 TS 封装 + DTO 类型（与 Rust 端对齐）+ `fileSrc`(convertFileSrc) |
+| `router.ts` | hash 路由，5 个 view |
+| `styles/global.css` | 全局浅色主题 CSS 变量 |
+| `views/Home.vue` | 主窗口首页：状态卡（模型/翻译就绪态）+ 截图/设置/历史入口 |
+| `views/Settings.vue` | 设置面板：8 分类（通用/快捷键/截图/OCR/翻译/界面/历史/关于），草稿机制保存 |
+| `views/History.vue` | 历史面板：左列表 + 右详情（截图 base64 + 原文/译文）+ 搜索/刷新/单删/清空 |
+| `views/Capture.vue` | 选区窗口：全屏 Canvas 显示截图 + 鼠标拖拽框选 + 抬起调 `select_region` + 创建结果窗口 |
+| `views/Result.vue` | 结果窗口：选区图 + Canvas 按 OCR 行 bbox 擦白画译文 + 工具栏（原文/译文切换、复制、保存、关闭）|
+| `stores/config.ts` | 配置 Pinia（load/save） |
+| `stores/capture.ts` | 选区结果 Pinia（Capture 写、Result 读）|
+
+**截图翻译交互**（桌面框选+弹窗，按用户决策）：
+1. 热键 → Rust `trigger_capture` 创建选区窗口
+2. Capture.vue `capture_all` → 全屏图 → 框选 → `select_region(monitor_id, bbox)`
+3. select_region 返回 `SelectResult` → 创建结果窗口 → Result.vue 译文叠加
 
 ---
 
@@ -254,33 +250,31 @@ pub enum CoreError {
 
 ---
 
-## 依赖图（模块层）
+## 依赖图（架构层）
 
 ```
-                    ┌─────────────┐
-                    │   types     │  (无依赖)
-                    └──────┬──────┘
-                           │
-        ┌──────────┬───────┼─────────┬────────────┐
-        ▼          ▼       ▼         ▼            ▼
-    capture      ocr   translate  history     model_manager
-        │          │       │         │            │
-        └──────────┴───────┼─────────┴────────────┘
-                          ▼
-                       config
-                          │
-                          ▼
-                    orchestrator (app crate)
-                          │
-              ┌───────────┼───────────┐
-              ▼           ▼           ▼
-            hotkey      tray        ui
-                          │
-                          ▼
-                        main
+   ┌─────────────────────────────────────────────┐
+   │  src/ (Vue 3 前端)                            │
+   │  views/ · api.ts(invoke) · stores/           │
+   └───────────────────┬─────────────────────────┘
+                       │ Tauri IPC (invoke / event)
+                       ▼
+   ┌─────────────────────────────────────────────┐
+   │  src-tauri/ (Rust 后端)                       │
+   │  commands/ (#[tauri::command])               │
+   │  state.rs (AppState: 持 Provider)            │
+   │  window.rs (窗口/托盘) · main.rs             │
+   └───────────────────┬─────────────────────────┘
+                       │ snaptext-core = { workspace = true }
+                       ▼
+   ┌─────────────────────────────────────────────┐
+   │  snaptext-core (纯逻辑库，100% 复用)          │
+   │  capture / ocr / translate / history /       │
+   │  model_manager / config / types              │
+   └─────────────────────────────────────────────┘
 ```
 
-**铁律**：箭头方向严格遵循。`types` 是叶节点，所有模块可依赖它。任何 core 内模块**不得依赖** app crate 任何东西。
+**铁律**：箭头方向严格遵循。`snaptext-core` 是纯逻辑层，不依赖任何 UI/系统框架。`src-tauri` 依赖 core 并包装为 Tauri 命令。`src`（前端）只能经 Tauri IPC 调命令，不直接碰 core。core 内 `types` 是叶节点。
 
 ---
 

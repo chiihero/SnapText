@@ -1,8 +1,8 @@
 # SnapText workspace 根清单。
-# 双 crate：snaptext-core（库，纯逻辑层）+ snaptext-app（二进制，UI + 系统集成）。
+# snaptext-core（库，纯逻辑层）+ src-tauri（Tauri 二进制，系统集成 + 命令层）。
 [workspace]
 resolver = "2"
-members = ["crates/snaptext-core", "crates/snaptext-app"]
+members = ["crates/snaptext-core", "src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
@@ -45,3 +45,19 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sha2 = "0.10"
 # 流式下载（DU-03）
 futures-util = "0.3"
+
+# Tauri 2（迁移自 egui；见 docs/DESIGN.md §3/§4）
+tauri = "2"
+tauri-build = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-dialog = "2"
+
+# release 体积优化（Tauri 应用分发用）。
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+

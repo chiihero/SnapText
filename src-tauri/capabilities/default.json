@@ -1,0 +1,27 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "SnapText 默认权限集",
+  "windows": ["main", "capture", "result"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:window:allow-create",
+    "core:window:allow-close",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:webview:default",
+    "core:webview:allow-create-webview-window",
+    "core:event:default",
+    "core:event:allow-emit",
+    "core:event:allow-listen",
+    "core:path:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-unregister-all",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-text",
+    "dialog:allow-save",
+    "dialog:allow-open"
+  ]
+}

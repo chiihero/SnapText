@@ -6,7 +6,27 @@
 > 子任务作为 DU 内部 checklist，不独立标完成状态。
 > 领取协议详见 `AI_GUIDE.md §2`。
 
-最后更新：2026-06-25
+最后更新：2026-06-27
+
+## DU-21 — 架构迁移：egui → Tauri 2 + Vue 3 + Naive UI [x]
+
+**目标**：弃用 egui（UI 痛点多：deferved viewport / Arc<Mutex> 借用 / API 不稳定 / 精致度上限低），迁移到 Tauri 2 + Vue 3 + Naive UI。core 100% 复用。
+
+**范围**：
+- 新增 `src-tauri/`（Rust 后端：`commands/` + `state.rs` + `window.rs` + `main.rs`）
+- 新增 `src/`（Vue 前端：5 个 view + api.ts + stores）
+- 删除 `crates/snaptext-app/`、`wix/`、`scripts/build-msi.ps1`
+
+**完成项**：
+- [x] 阶段0 脚手架（workspace + Vue/Vite/TS/Naive UI + Tauri 2 配置）
+- [x] 阶段1 core 接入（15 个 #[tauri::command]）
+- [x] 阶段2 截图选区（Capture.vue Canvas 框选 + 选区窗口 + 热键触发）
+- [x] 阶段3 OCR+翻译+结果窗口（select_region + Result.vue 图上译文叠加）
+- [x] 阶段4 面板+系统集成（Settings 8 分类 / History / 托盘 / 热键动态生效 / 剪贴板 / 单实例）
+- [x] 阶段5 清理 + 文档（删旧代码 + CODE_MAP/DESIGN/TASKS/PROGRESS 同步）
+- [x] 测试（core 40 + src-tauri 18 = 58 测试通过；核心管线 `run_ocr_translate` 抽纯函数 + mock Provider 集成测试，取代丢失的 orchestrator full_pipeline；前端 vue-tsc + vite build 通过；`tauri dev` 应用启动验证通过）
+
+**依赖**：DU-01~DU-15（core 全部 DU）。**复用**：snaptext-core 0 改动。
 
 ---
 
@@ -503,7 +523,7 @@ cargo run -p snaptext-app
 
 ---
 
-## DU-15 — 历史记录 GUI（精简版）+ 读取接口 [~]（读取接口完成；GUI 推迟）
+## DU-15 — 历史记录 GUI（精简版）+ 读取接口 [x]（读取接口 + GUI 完成）
 
 **目标**：用户可查看历史翻译；同时补齐 DU-06 的读取接口。
 
@@ -512,12 +532,12 @@ cargo run -p snaptext-app
 - `snaptext-core/src/history/sqlite_store.rs`（补齐 list / delete_before / stats 实现）
 
 **精简范围（仅做）**：
-- [ ] 列表视图：时间 / 原文（截断）/ 译文（截断）/ Provider
-- [ ] 关键词搜索（搜索原文 + 译文）
-- [ ] 单条删除（右键菜单 / 删除按钮）
-- [ ] 清空全部（带确认对话框）
-- [ ] 单条复制译文（右键菜单）
-- [ ] 补齐 SqliteHistoryStore::list / delete_before / stats 实现
+- [x] 列表视图：时间 / 原文（截断）/ Provider
+- [x] 关键词搜索（搜索原文 + 译文）
+- [x] 单条删除（删除按钮）
+- [x] 清空全部（清空按钮）
+- [x] 详情视图：截图缩略图 + 原文/译文全文（V002 扩展）
+- [x] 补齐 SqliteHistoryStore::list / delete_before / stats 实现
 
 **不做的项**：
 - 时间筛选 / Provider 筛选

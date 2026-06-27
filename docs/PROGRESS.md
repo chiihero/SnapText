@@ -9,11 +9,23 @@
 
 ## 当前状态
 
-**整体阶段**：P0 完成（13/13）✅；P1 完成（DU-15 GUI 推迟）；P2 DU-17/18 完成，DU-19/20 可选/受限标注。
+**整体阶段**：P0 完成（13/13）✅；P1 完成（含 DU-15 GUI）；P2 DU-17/18 完成，DU-19/20 可选/受限标注。
 
 **当前路线**：取消版本号，按 P0/P1/P2 优先级推进（详见 DESIGN §7）
 
-**总体进度**：**18 / 20 DU**（P0: 13/13 ✅, P1: 3/3 [DU-15 GUI 待], P2: 2/4 [DU-19/20 可选]）
+**总体进度**：**18 / 20 DU**（P0: 13/13 ✅, P1: 3/3 ✅, P2: 2/4 [DU-19/20 可选]）
+
+**近期变更**（2026-06-27）：
+- **架构迁移：egui → Tauri 2 + Vue 3 + Naive UI**。删 `crates/snaptext-app`（egui 二进制）、`wix/`、`build-msi.ps1`；新增 `src-tauri/`（Rust 后端：命令层 + 系统集成）+ `src/`（Vue 前端）。core 100% 复用。迁移动机：egui 做截图翻译类产品 UI 痛点多（deferred viewport / Arc<Mutex> 借用 / API 不稳定 / 精致度上限低），Tauri 让 UI 痛点一次性解决。
+- Tauri 后端 15 个命令（config/models/capture/select_region/history），系统集成改用 tauri-plugin-*（global-shortcut/clipboard-manager/single-instance/dialog）+ 原生 tray。
+- 前端 5 个窗口视图（Home/Settings/History/Capture/Result），桌面框选+弹窗式截图翻译。
+- 此前（egui 期）：译文图上原位覆盖、历史 V002 迁移（截图/OCR 行/逐行译文）、DU-15 历史面板——逻辑全部搬到 Tauri 后端保留。
+
+**验证**：`cargo test --workspace` 58 测试全过（core 40 + src-tauri 18）；`npm run build`（vue-tsc 类型检查 + vite 打包）通过；`cargo check --workspace` 无警告；`npm run tauri dev` **应用实跑启动成功**（进程存活、日志实证：翻译 Provider 就绪 / 全局热键 Ctrl+Alt+Q 已注册 / ONNX 模型加载 / SnapText 启动完成）。
+
+**测试覆盖**：核心管线（OCR→翻译→行级配对）抽成纯函数 `run_ocr_translate`，用 mock Provider 集成测试覆盖（`pipeline_ocr_translate_aligns` 等 6 个），取代随 crate 删除丢失的 orchestrator full_pipeline。另含 crop 坐标换算、history DTO 转换、capture 文件复制测试。
+
+**待人工真机验证**：`npm run tauri dev` 端到端 GUI 交互——按热键截图→鼠标框选→译文叠加；多显示器/DPI 坐标换算；全屏透明窗口在 Windows 的表现。GUI 人机交互无法无头自动化，需在桌面操作。
 
 ---
 

@@ -1,0 +1,44 @@
+[package]
+name = "snaptext"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SnapText 截图 OCR + 翻译"
+
+[build-dependencies]
+tauri-build = { workspace = true, features = [] }
+
+[dependencies]
+# Tauri 核心
+tauri = { workspace = true, features = ["tray-icon", "protocol-asset"] }
+tauri-plugin-global-shortcut = { workspace = true }
+tauri-plugin-clipboard-manager = { workspace = true }
+tauri-plugin-single-instance = { workspace = true }
+tauri-plugin-dialog = { workspace = true }
+
+# core（复用全部业务逻辑）
+snaptext-core = { workspace = true }
+
+# 异步 / 序列化 / 日志（与 core 共用版本）
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+image = { workspace = true }
+reqwest = { workspace = true }
+dirs = { workspace = true }
+base64 = "0.22"
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+tempfile = "3"
+
+[features]
+# 默认启用自定义协议（前端 dist 加载）。
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

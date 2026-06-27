@@ -18,3 +18,10 @@
 # 运行日志 / 临时产物
 *.log
 smiley-tmp.zip
+
+# 前端（Vue + Tauri）
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+
