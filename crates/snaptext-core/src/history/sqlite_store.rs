@@ -80,6 +80,18 @@ impl HistoryStore for SqliteHistoryStore {
         .map_err(CoreError::History)
     }
 
+    async fn search(&self, limit: u32, keyword: &str) -> Result<Vec<HistoryRecord>, CoreError> {
+        let pool = self.pool.clone();
+        let keyword = keyword.to_string();
+        tokio::task::spawn_blocking(move || -> Result<Vec<HistoryRecord>, HistoryError> {
+            let conn = pool.get().map_err(|e| HistoryError::Pool(e.to_string()))?;
+            dao::list(&conn, limit, Some(&keyword))
+        })
+        .await
+        .map_err(|e| CoreError::History(HistoryError::Db(format!("历史搜索线程异常：{e}"))))?
+        .map_err(CoreError::History)
+    }
+
     async fn delete_before(&self, before: SystemTime) -> Result<u64, CoreError> {
         let pool = self.pool.clone();
         tokio::task::spawn_blocking(move || -> Result<u64, HistoryError> {
@@ -88,6 +100,28 @@ impl HistoryStore for SqliteHistoryStore {
         })
         .await
         .map_err(|e| CoreError::History(HistoryError::Db(format!("历史删除线程异常：{e}"))))?
+        .map_err(CoreError::History)
+    }
+
+    async fn delete_by_id(&self, id: i64) -> Result<bool, CoreError> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || -> Result<bool, HistoryError> {
+            let conn = pool.get().map_err(|e| HistoryError::Pool(e.to_string()))?;
+            dao::delete_by_id(&conn, id)
+        })
+        .await
+        .map_err(|e| CoreError::History(HistoryError::Db(format!("历史删除线程异常：{e}"))))?
+        .map_err(CoreError::History)
+    }
+
+    async fn clear_all(&self) -> Result<u64, CoreError> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || -> Result<u64, HistoryError> {
+            let conn = pool.get().map_err(|e| HistoryError::Pool(e.to_string()))?;
+            dao::clear_all(&conn)
+        })
+        .await
+        .map_err(|e| CoreError::History(HistoryError::Db(format!("历史清空线程异常：{e}"))))?
         .map_err(CoreError::History)
     }
 
@@ -113,6 +147,7 @@ mod tests {
 
     fn sample_record() -> HistoryRecord {
         HistoryRecord {
+            id: 0,
             created_at: SystemTime::now(),
             source_lang: Lang::En,
             target_lang: Lang::Zh,
@@ -126,6 +161,9 @@ mod tests {
             monitor_id: None,
             bbox: None,
             notes: None,
+            screenshot_png: None,
+            ocr_lines: None,
+            line_translations: None,
         }
     }
 

@@ -21,12 +21,21 @@ pub fn insert(conn: &Connection, record: &HistoryRecord) -> Result<(), HistoryEr
         .bbox
         .map(|b| (Some(b.x), Some(b.y), Some(b.w), Some(b.h)))
         .unwrap_or((None, None, None, None));
+    let ocr_lines_json = record
+        .ocr_lines
+        .as_ref()
+        .map(|l| serde_json::to_string(l).unwrap_or_default());
+    let line_translations_json = record
+        .line_translations
+        .as_ref()
+        .map(|l| serde_json::to_string(l).unwrap_or_default());
 
     conn.execute(
         "INSERT INTO translation_history
          (created_at, source_lang, target_lang, original_text, translated_text, provider, model,
-          prompt_tokens, completion_tokens, total_cost_cny_milli, monitor_id, bbox_x, bbox_y, bbox_w, bbox_h, notes)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+          prompt_tokens, completion_tokens, total_cost_cny_milli, monitor_id, bbox_x, bbox_y, bbox_w, bbox_h, notes,
+          screenshot_png, ocr_lines_json, line_translations_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
         params![
             created_at,
             record.source_lang.to_string(),
@@ -44,6 +53,9 @@ pub fn insert(conn: &Connection, record: &HistoryRecord) -> Result<(), HistoryEr
             bw,
             bh,
             record.notes,
+            record.screenshot_png,
+            ocr_lines_json,
+            line_translations_json,
         ],
     )
     .map_err(|e| HistoryError::Db(e.to_string()))?;
@@ -86,7 +98,7 @@ pub fn cleanup(
     Ok(deleted)
 }
 
-const SELECT_COLS: &str = "id, created_at, source_lang, target_lang, original_text, translated_text, provider, model, prompt_tokens, completion_tokens, total_cost_cny_milli, monitor_id, bbox_x, bbox_y, bbox_w, bbox_h, notes";
+const SELECT_COLS: &str = "id, created_at, source_lang, target_lang, original_text, translated_text, provider, model, prompt_tokens, completion_tokens, total_cost_cny_milli, monitor_id, bbox_x, bbox_y, bbox_w, bbox_h, notes, screenshot_png, ocr_lines_json, line_translations_json";
 
 /// 列出历史记录（按 id 倒序）。可选关键词搜索（原文 + 译文 LIKE）。
 pub fn list(
@@ -123,6 +135,25 @@ pub fn delete_before(conn: &Connection, before: SystemTime) -> Result<u64, Histo
     Ok(n as u64)
 }
 
+/// 按主键删除单条记录，返回是否删除成功。
+pub fn delete_by_id(conn: &Connection, id: i64) -> Result<bool, HistoryError> {
+    let n = conn
+        .execute(
+            "DELETE FROM translation_history WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| HistoryError::Db(e.to_string()))?;
+    Ok(n > 0)
+}
+
+/// 清空全部记录，返回删除行数。
+pub fn clear_all(conn: &Connection) -> Result<u64, HistoryError> {
+    let n = conn
+        .execute("DELETE FROM translation_history", [])
+        .map_err(|e| HistoryError::Db(e.to_string()))?;
+    Ok(n as u64)
+}
+
 /// 统计记录总数。
 pub fn stats(conn: &Connection) -> Result<u64, HistoryError> {
     let total: i64 = conn
@@ -147,7 +178,10 @@ fn row_to_record(row: &Row) -> rusqlite::Result<HistoryRecord> {
         (Some(x), Some(y), Some(w), Some(h)) => Some(Bbox { x, y, w, h }),
         _ => None,
     };
+    let ocr_lines_json: Option<String> = row.get(17)?;
+    let line_translations_json: Option<String> = row.get(18)?;
     Ok(HistoryRecord {
+        id: row.get(0)?,
         created_at,
         source_lang: source_lang.parse().unwrap_or(Lang::Auto),
         target_lang: target_lang.parse().unwrap_or(Lang::Auto),
@@ -161,5 +195,12 @@ fn row_to_record(row: &Row) -> rusqlite::Result<HistoryRecord> {
         monitor_id: row.get(11)?,
         bbox,
         notes: row.get(16)?,
+        screenshot_png: row.get::<_, Option<Vec<u8>>>("screenshot_png")?,
+        ocr_lines: ocr_lines_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
+        line_translations: line_translations_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
     })
 }

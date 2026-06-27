@@ -14,11 +14,13 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 
 use crate::error::CoreError;
-use crate::types::{Bbox, Lang, ProviderId};
+use crate::types::{Bbox, Lang, OcrLine, ProviderId};
 
 /// 一条翻译历史记录（对应 `translation_history` 表，见 DESIGN §5.6）。
 #[derive(Debug, Clone)]
 pub struct HistoryRecord {
+    /// 主键。`insert` 时为 0（sqlite 自增分配），`list` 读回时填充实际 id。
+    pub id: i64,
     pub created_at: SystemTime,
     pub source_lang: Lang,
     pub target_lang: Lang,
@@ -33,6 +35,12 @@ pub struct HistoryRecord {
     pub monitor_id: Option<String>,
     pub bbox: Option<Bbox>,
     pub notes: Option<String>,
+    /// 选区截图（PNG 压缩字节）。V002 新增；译文图上原位覆盖与历史面板回看用。
+    pub screenshot_png: Option<Vec<u8>>,
+    /// OCR 行（含 bbox），V002 新增；历史面板可重现图上翻译效果。
+    pub ocr_lines: Option<Vec<OcrLine>>,
+    /// 与 `ocr_lines` 按索引配对的逐行译文，V002 新增。
+    pub line_translations: Option<Vec<String>>,
 }
 
 /// 历史统计（DU-15 实现）。
@@ -46,6 +54,12 @@ pub struct HistoryStats {
 pub trait HistoryStore: Send + Sync {
     async fn insert(&self, record: HistoryRecord) -> Result<(), CoreError>;
     async fn list(&self, limit: u32) -> Result<Vec<HistoryRecord>, CoreError>;
+    /// 带关键词搜索（原文 + 译文 LIKE）。`None` 等同不筛选。
+    async fn search(&self, limit: u32, keyword: &str) -> Result<Vec<HistoryRecord>, CoreError>;
     async fn delete_before(&self, before: SystemTime) -> Result<u64, CoreError>;
+    /// 按主键删除单条。
+    async fn delete_by_id(&self, id: i64) -> Result<bool, CoreError>;
+    /// 清空全部。
+    async fn clear_all(&self) -> Result<u64, CoreError>;
     async fn stats(&self) -> Result<HistoryStats, CoreError>;
 }
