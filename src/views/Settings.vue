@@ -50,9 +50,31 @@ const langOptions = [
   { label: "日文", value: "ja" as Lang },
 ];
 const tierOptions = [
-  { label: "medium（精度优先）", value: "Medium" as Tier },
-  { label: "small（速度优先）", value: "Small" as Tier },
+  { label: "medium（精度优先）", value: "medium" as Tier },
+  { label: "small（速度优先）", value: "small" as Tier },
 ];
+
+// DeepSeek 模型下拉：填 Key 后点"刷新"动态拉取（GET /v1/models），可手输兜底。
+const deepseekModelOptions = ref<{ label: string; value: string }[]>([]);
+const loadingModels = ref(false);
+async function refreshDeepseekModels() {
+  const dc = draft.translate.deepseek;
+  const key = dc.api_key?.trim();
+  if (!key) {
+    message.warning("请先填写 API Key");
+    return;
+  }
+  loadingModels.value = true;
+  try {
+    const ids = await api.listDeepseekModels(dc.base_url, key);
+    deepseekModelOptions.value = ids.map((id) => ({ label: id, value: id }));
+    message.success(`已拉取 ${ids.length} 个模型`);
+  } catch (e) {
+    message.error(`拉取模型失败：${e}`);
+  } finally {
+    loadingModels.value = false;
+  }
+}
 
 onMounted(async () => {
   if (!store.config) await store.load();
@@ -139,21 +161,18 @@ async function save() {
             <n-form label-placement="left" :label-width="100">
               <n-form-item label="引擎">
                 <n-radio-group v-model:value="draft.translate.provider">
-                  <n-radio value="DeepSeek" label="DeepSeek" />
-                  <n-radio value="DeepL" label="DeepL" />
-                  <n-radio value="Microsoft" label="Microsoft" />
+                  <n-radio value="deepseek" label="DeepSeek" />
+                  <n-radio value="deepl" label="DeepL" />
+                  <n-radio value="microsoft" label="Microsoft" />
                 </n-radio-group>
               </n-form-item>
               <n-form-item label="目标语言">
                 <n-select v-model:value="draft.translate.target_lang" :options="langOptions" />
               </n-form-item>
 
-              <template v-if="draft.translate.provider === 'DeepSeek'">
+              <template v-if="draft.translate.provider === 'deepseek'">
                 <n-form-item label="Base URL">
                   <n-input v-model:value="draft.translate.deepseek.base_url" />
-                </n-form-item>
-                <n-form-item label="模型">
-                  <n-input v-model:value="draft.translate.deepseek.model" />
                 </n-form-item>
                 <n-form-item label="API Key">
                   <n-input
@@ -163,8 +182,33 @@ async function save() {
                     placeholder="sk-..."
                   />
                 </n-form-item>
+                <n-form-item label="模型">
+                  <div style="display: flex; gap: 8px; width: 100%">
+                    <n-select
+                      v-model:value="draft.translate.deepseek.model"
+                      :options="deepseekModelOptions"
+                      filterable
+                      tag
+                      placeholder="填 Key 后点刷新拉取，或手动输入模型名"
+                      style="flex: 1"
+                    />
+                    <n-button size="small" :loading="loadingModels" @click="refreshDeepseekModels">刷新</n-button>
+                  </div>
+                </n-form-item>
+                <n-form-item label="思考模式">
+                  <div style="display: flex; align-items: center; gap: 16px">
+                    <n-switch v-model:value="draft.translate.deepseek.reasoning_enabled" />
+                    <n-radio-group
+                      v-model:value="draft.translate.deepseek.reasoning_effort"
+                      :disabled="!draft.translate.deepseek.reasoning_enabled"
+                    >
+                      <n-radio value="high" label="high（默认）" />
+                      <n-radio value="max" label="max（最强）" />
+                    </n-radio-group>
+                  </div>
+                </n-form-item>
               </template>
-              <template v-else-if="draft.translate.provider === 'DeepL'">
+              <template v-else-if="draft.translate.provider === 'deepl'">
                 <n-form-item label="套餐">
                   <n-radio-group v-model:value="draft.translate.deepl.plan">
                     <n-radio value="Free" label="Free" />
@@ -175,7 +219,7 @@ async function save() {
                   <n-input v-model:value="draft.translate.deepl.api_key" type="password" show-password-on="click" />
                 </n-form-item>
               </template>
-              <template v-else-if="draft.translate.provider === 'Microsoft'">
+              <template v-else-if="draft.translate.provider === 'microsoft'">
                 <n-form-item label="区域">
                   <n-input v-model:value="draft.translate.microsoft.region" placeholder="southeastasia" />
                 </n-form-item>

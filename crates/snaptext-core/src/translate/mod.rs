@@ -67,6 +67,8 @@ pub fn build_provider(
                 dc.model.clone(),
                 Duration::from_secs(cfg.timeout_llm_secs),
                 client.clone(),
+                dc.reasoning_enabled,
+                dc.reasoning_effort,
             )))
         }
         ProviderKind::DeepL => {

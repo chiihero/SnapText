@@ -189,26 +189,41 @@ pub enum ProviderKind {
     Microsoft,
 }
 
+/// DeepSeek 思考强度（见 DESIGN §4.3「DeepSeek API 事实基准」）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    #[default]
+    High,
+    Max,
+}
+
 /// DeepSeek（OpenAI 兼容）配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DeepSeekConfig {
     /// OpenAI 兼容 base_url。
     pub base_url: String,
-    /// 模型名。⚠️ `deepseek-v4-flash` 未在官方确认，DU-05 验证失败则切 `deepseek-chat`（DESIGN §4.3 / R9）。
+    /// 模型名。默认空——设置页填 Key 后调 `GET /v1/models` 动态拉取选择，也可手输。
     pub model: String,
     /// API key（可由 `SNAPTEXT_DEEPSEEK_KEY` 覆盖）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    /// 是否开启思考模式。翻译是简单请求，官方建议关闭以加速、降本，故默认 false。
+    pub reasoning_enabled: bool,
+    /// 思考强度（仅 reasoning_enabled=true 时生效）。
+    pub reasoning_effort: ReasoningEffort,
 }
 
 impl Default for DeepSeekConfig {
     fn default() -> Self {
         Self {
             base_url: "https://api.deepseek.com/v1".to_string(),
-            // R9：deepseek-v4-flash 不存在，用 deepseek-chat（V3 通用，官方确认）。
-            model: "deepseek-chat".to_string(),
+            // 默认空：用户在设置页拉取/输入模型后再翻译（空 model 翻译时报错）。
+            model: String::new(),
             api_key: None,
+            reasoning_enabled: false,
+            reasoning_effort: ReasoningEffort::default(),
         }
     }
 }
@@ -410,9 +425,32 @@ trigger = "Ctrl+Alt+E"
     }
 
     #[test]
-    fn deepseek_default_model() {
-        // R9 已解决：deepseek-v4-flash 不存在，默认 deepseek-chat（V3）。
-        assert_eq!(DeepSeekConfig::default().model, "deepseek-chat");
+    fn deepseek_defaults() {
+        // 默认：model 空（设置页拉取）、思考关、强度 high。
+        let d = DeepSeekConfig::default();
+        assert_eq!(d.model, "");
+        assert!(!d.reasoning_enabled);
+        assert_eq!(d.reasoning_effort, ReasoningEffort::High);
+    }
+
+    #[test]
+    fn reasoning_effort_serde_lowercase() {
+        // effort serde 小写往返（与前端 TS 字面对齐）。
+        assert_eq!(
+            serde_json::to_string(&ReasoningEffort::High).unwrap(),
+            "\"high\""
+        );
+        let max: ReasoningEffort = serde_json::from_str("\"max\"").unwrap();
+        assert_eq!(max, ReasoningEffort::Max);
+    }
+
+    #[test]
+    fn deepseek_config_serde_defaults_for_new_fields() {
+        // 旧配置（无 reasoning 字段）反序列化时，新字段取默认值（#[serde(default)]）。
+        let json = r#"{ "base_url":"x","model":"m","api_key":null }"#;
+        let d: DeepSeekConfig = serde_json::from_str(json).unwrap();
+        assert!(!d.reasoning_enabled);
+        assert_eq!(d.reasoning_effort, ReasoningEffort::High);
     }
 
     #[test]

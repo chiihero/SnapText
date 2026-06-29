@@ -102,3 +102,46 @@ enum ProgressMsg {
     Step { role: String, received: u64, total: Option<u64> },
     Done { ok: bool, error: String },
 }
+
+/// 拉取 DeepSeek 可用模型列表（`GET {base_url}/models`），供设置页下拉。
+///
+/// DeepSeek API 唯一依据为中文官方文档（见 DESIGN §4.3「DeepSeek API 事实基准」）。
+/// base_url + api_key 由前端从设置草稿传入（兼容第三方 OpenAI 兼容端点）。
+/// api_key 为空 → 友好错误；网络/解析失败 → 中文错误。
+#[tauri::command]
+pub async fn list_deepseek_models(
+    state: State<'_, AppState>,
+    base_url: String,
+    api_key: String,
+) -> Result<Vec<String>, String> {
+    if api_key.trim().is_empty() {
+        return Err("请先填写 API Key".into());
+    }
+    #[derive(serde::Deserialize)]
+    struct ModelsResp {
+        data: Vec<ModelItem>,
+    }
+    #[derive(serde::Deserialize)]
+    struct ModelItem {
+        id: String,
+    }
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let resp = state
+        .client
+        .get(&url)
+        .bearer_auth(&api_key)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| format!("请求模型列表失败：{e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("模型列表请求失败（HTTP {status}）：{body}"));
+    }
+    let parsed: ModelsResp = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析模型列表失败：{e}"))?;
+    Ok(parsed.data.into_iter().map(|m| m.id).collect())
+}

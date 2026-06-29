@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use super::prompt::render_translate_prompt;
 use super::{common_pairs, TranslationProvider};
+use crate::config::ReasoningEffort;
 use crate::error::{CoreError, TranslateError};
 use crate::types::{LangPair, ProviderId, TokenUsage, TranslateRequest, TranslateResponse};
 
@@ -19,6 +20,9 @@ pub struct OpenAiCompatProvider {
     timeout: Duration,
     id: ProviderId,
     supported: Vec<LangPair>,
+    /// 思考模式开关（DeepSeek V3.2+ thinking 参数，见 DESIGN §4.3）。
+    reasoning_enabled: bool,
+    reasoning_effort: ReasoningEffort,
 }
 
 impl OpenAiCompatProvider {
@@ -29,6 +33,8 @@ impl OpenAiCompatProvider {
         model: String,
         timeout: Duration,
         client: reqwest::Client,
+        reasoning_enabled: bool,
+        reasoning_effort: ReasoningEffort,
     ) -> Self {
         Self {
             client,
@@ -38,6 +44,8 @@ impl OpenAiCompatProvider {
             timeout,
             id,
             supported: common_pairs(),
+            reasoning_enabled,
+            reasoning_effort,
         }
     }
 }
@@ -55,6 +63,10 @@ struct ChatChoice {
 #[derive(Deserialize)]
 struct ChatMessage {
     content: String,
+    /// 思考模式下的思维链（与 content 同级）。翻译单轮场景忽略，仅声明以兼容响应。
+    #[serde(default)]
+    #[allow(dead_code)]
+    reasoning_content: Option<String>,
 }
 #[derive(Deserialize)]
 struct ChatUsage {
@@ -75,11 +87,27 @@ impl TranslationProvider for OpenAiCompatProvider {
     }
 
     async fn translate(&self, req: TranslateRequest) -> Result<TranslateResponse, CoreError> {
+        if self.model.trim().is_empty() {
+            return Err(CoreError::Translate(TranslateError::Request(
+                "请先在设置选择模型".into(),
+            )));
+        }
         let prompt = render_translate_prompt(&req);
-        let body = serde_json::json!({
+        // 思考模式参数（DESIGN §4.3 事实基准）：thinking 与 reasoning_effort 互斥。
+        // 关 → thinking:disabled；开 → thinking:enabled + reasoning_effort。
+        let mut body = serde_json::json!({
             "model": self.model,
             "messages": [{"role":"user","content":prompt}],
         });
+        if self.reasoning_enabled {
+            body["thinking"] = serde_json::json!({ "type": "enabled" });
+            body["reasoning_effort"] = serde_json::json!(match self.reasoning_effort {
+                ReasoningEffort::High => "high",
+                ReasoningEffort::Max => "max",
+            });
+        } else {
+            body["thinking"] = serde_json::json!({ "type": "disabled" });
+        }
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let resp = self
             .client
@@ -150,9 +178,11 @@ mod tests {
             ProviderId::new_static("deepseek"),
             "https://api.deepseek.com/v1".into(),
             key,
-            "deepseek-chat".into(),
+            "deepseek-v4-flash".into(),
             Duration::from_secs(30),
             reqwest::Client::new(),
+            false,
+            ReasoningEffort::High,
         );
         let req = TranslateRequest {
             text: "Hello, world.".into(),
