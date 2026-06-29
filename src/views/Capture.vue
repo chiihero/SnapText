@@ -3,12 +3,12 @@
 //
 // 截图在 Rust 端 trigger_capture_cmd 里"先截图再开窗"完成（避免窗口盖住桌面
 // 截到白屏自己）。窗口打开后主动调 get_last_capture 拉取已缓存截图渲染。
-// 框选完成后调 select_region，结果存 Pinia，然后创建结果窗口（label=result）。
+// 框选完成后调 select_region（结果存后端 last_result），然后创建结果窗口
+// （label=result），结果窗口 onMounted 调 get_last_result 主动拉取。
 import { onMounted, ref } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { api, type MonitorDto, type SelectResult } from "../api";
-import { useCaptureStore } from "../stores/capture";
 
 const canvas = ref<HTMLCanvasElement | null>(null);
 const status = ref("加载截图…");
@@ -16,19 +16,25 @@ const primary = ref<MonitorDto | null>(null);
 const img = new Image();
 const dragStart = ref<{ x: number; y: number } | null>(null);
 const dragCur = ref<{ x: number; y: number } | null>(null);
-const store = useCaptureStore();
 
 onMounted(async () => {
   // 主动拉取 Rust 端已缓存的截图（trigger_capture_cmd 先截图后开窗）。
+  api.logDiag("capture_timing", "onMounted");
   try {
+    const fetchStart = performance.now();
     const monitors = await api.getLastCapture();
+    api.logDiag("capture_timing", `getLastCapture done in ${(performance.now() - fetchStart).toFixed(0)}ms`);
     primary.value = monitors.find((m) => m.primary) ?? monitors[0] ?? null;
     if (!primary.value) {
       status.value = "未找到显示器";
       return;
     }
     status.value = "拖动鼠标框选文字区域 · Esc 取消";
-    img.onload = () => draw();
+    const imgStart = performance.now();
+    img.onload = () => {
+      api.logDiag("capture_timing", `img.onload in ${(performance.now() - imgStart).toFixed(0)}ms`);
+      draw();
+    };
     img.src = api.fileSrc(primary.value.shot_path);
   } catch (e) {
     status.value = `加载截图失败：${e}`;
@@ -87,7 +93,7 @@ async function onUp() {
   draw();
   try {
     const result: SelectResult = await api.selectRegion(primary.value.id, bbox);
-    store.lastResult = result;
+    // 结果已由后端 select_region 缓存（last_result），结果窗口 onMounted 拉取。
     // 打开结果窗口。
     await new WebviewWindow("result", {
       url: "index.html#/result",

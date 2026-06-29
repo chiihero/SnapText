@@ -13,6 +13,8 @@ use snaptext_core::translate::{build_provider, TranslationProvider};
 use snaptext_core::Config;
 use tokio::sync::Mutex;
 
+use crate::commands::ocr_translate::SelectResult;
+
 /// 全局应用状态，经 `app.manage()` 注入，命令用 `State<'_, AppState>` 取用。
 pub struct AppState {
     pub capture: Arc<dyn CaptureProvider>,
@@ -25,6 +27,11 @@ pub struct AppState {
     pub client: reqwest::Client,
     /// 最近一次全屏截图缓存（capture_all 写入，select_region 读取裁剪）。
     pub captured: Mutex<Vec<snaptext_core::types::CapturedFrame>>,
+    /// 最近一次选区结果缓存（select_region 写入，Result 窗口 onMounted 拉取）。
+    ///
+    /// 与 captured 同款反竞态模式：select_region 完成时结果窗口可能还没加载，
+    /// 前端事件/Pinia 跨窗口不共享，故缓存后端、由结果窗口主动命令拉取。
+    pub last_result: Mutex<Option<SelectResult>>,
 }
 
 impl AppState {
@@ -66,6 +73,7 @@ impl AppState {
             config: Mutex::new(config),
             client,
             captured: Mutex::new(Vec::new()),
+            last_result: Mutex::new(None),
         })
     }
 }

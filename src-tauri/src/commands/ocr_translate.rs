@@ -18,7 +18,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::state::AppState;
 
 /// 选区结果：返回给前端结果窗口渲染图上覆盖。
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct SelectResult {
     /// 裁剪图绝对路径（前端用 convertFileSrc 转 webview URL）。
     pub shot_path: String,
@@ -97,7 +97,7 @@ pub async fn select_region(
         tracing::warn!(error = %e, "写入历史失败");
     }
 
-    Ok(SelectResult {
+    let result = SelectResult {
         shot_path,
         ocr_lines: outcome.ocr_lines,
         translations: outcome.translations,
@@ -105,7 +105,23 @@ pub async fn select_region(
         translated: outcome.resp.translated_text,
         provider: outcome.resp.provider.to_string(),
         elapsed_ms: start.elapsed().as_millis() as u64,
-    })
+    };
+    // 缓存进 state：结果窗口是独立 WebView，Pinia 不跨窗口共享，
+    // 改由 Result.vue onMounted 调 get_last_result 主动拉取（反竞态，与截图缓存同款）。
+    *state.last_result.lock().await = Some(result.clone());
+    Ok(result)
+}
+
+/// 取最近一次选区结果（结果窗口 onMounted 拉取）。
+///
+/// Pinia 状态不跨窗口共享，选区窗口写入的结果结果窗口读不到，
+/// 故缓存后端、由结果窗口主动调本命令拉取。无缓存时报错。
+#[tauri::command]
+pub async fn get_last_result(state: State<'_, AppState>) -> Result<SelectResult, String> {
+    let guard = state.last_result.lock().await;
+    guard
+        .clone()
+        .ok_or_else(|| "无缓存选区结果".to_string())
 }
 
 /// OCR + 翻译 + 行级配对的核心管线（不依赖 Tauri，便于 mock Provider 单元/集成测试）。
@@ -170,8 +186,16 @@ pub struct OcrTranslateOutcome {
 }
 
 /// 裁剪缓存帧的 bbox 区域（虚拟桌面坐标 → 屏内坐标）。
+///
+/// bbox 是前端算出的虚拟桌面坐标，先减 monitor 原点转为屏内坐标。
+/// 再 clamp 到图像边界——`crop_imm` 在 `x+w > width` 时会 panic，多屏坐标错位
+/// 或框选越出屏幕时会触发（B6），故超界区域返回错误而非 panic。
 pub fn crop_frame(frame: &snaptext_core::types::CapturedFrame, bbox: Bbox) -> Result<DynamicImage, String> {
     let m = &frame.monitor;
+    let img = &frame.image;
+    let img_w = img.width();
+    let img_h = img.height();
+
     let x = (bbox.x - m.x).max(0) as u32;
     let y = (bbox.y - m.y).max(0) as u32;
     let w = bbox.w.max(0) as u32;
@@ -179,8 +203,17 @@ pub fn crop_frame(frame: &snaptext_core::types::CapturedFrame, bbox: Bbox) -> Re
     if w == 0 || h == 0 {
         return Err("选区尺寸为 0".into());
     }
-    let img = image::imageops::crop_imm(&frame.image, x, y, w, h).to_image();
-    Ok(DynamicImage::ImageRgba8(img))
+    // 选区起点已在图外（如多屏 bbox 错位到屏幕外），无可裁剪区域。
+    if x >= img_w || y >= img_h {
+        return Err(format!(
+            "选区起点 ({x},{y}) 超出截图范围 ({img_w}×{img_h})"
+        ));
+    }
+    // clamp 宽高到图像右下边界，避免 crop_imm 越界 panic。
+    let w = w.min(img_w - x);
+    let h = h.min(img_h - y);
+    let cropped = image::imageops::crop_imm(img, x, y, w, h).to_image();
+    Ok(DynamicImage::ImageRgba8(cropped))
 }
 
 /// 把裁剪图写临时文件 + 返回绝对路径（前端用 convertFileSrc 转 URL）。
@@ -484,6 +517,54 @@ mod integration_tests {
         let err = crop_frame(&frame, Bbox { x: 0, y: 0, w: 0, h: 0 })
             .expect_err("零尺寸应报错");
         assert!(err.contains("0"));
+    }
+
+    #[test]
+    fn crop_frame_bbox_beyond_image_is_clamped() {
+        // B6：bbox 超出图像右下边界 → clamp 到边界，不 panic。
+        // 多屏坐标错位或框选越出屏幕时会触发此路径。
+        let frame = CapturedFrame {
+            monitor: MonitorInfo {
+                id: MonitorId::new("D1"),
+                name: "m".into(),
+                width: 10,
+                height: 10,
+                scale: 1.0,
+                x: 0,
+                y: 0,
+                is_primary: true,
+            },
+            image: RgbaImage::new(10, 10),
+            captured_at: std::time::SystemTime::now(),
+        };
+        // 选区 (8,8) 起、宽高各 100，远超 10×10 图。
+        let crop = crop_frame(&frame, Bbox { x: 8, y: 8, w: 100, h: 100 })
+            .expect("越界应 clamp 成功而非报错");
+        // 应只裁到图像剩余的 2×2。
+        assert_eq!(crop.width(), 2);
+        assert_eq!(crop.height(), 2);
+    }
+
+    #[test]
+    fn crop_frame_origin_outside_image_errors() {
+        // B6：选区起点已在图外（如多屏 bbox 错位）→ 返回 Err，不 panic。
+        let frame = CapturedFrame {
+            monitor: MonitorInfo {
+                id: MonitorId::new("D1"),
+                name: "m".into(),
+                width: 10,
+                height: 10,
+                scale: 1.0,
+                x: 0,
+                y: 0,
+                is_primary: true,
+            },
+            image: RgbaImage::new(10, 10),
+            captured_at: std::time::SystemTime::now(),
+        };
+        let err = crop_frame(&frame, Bbox { x: 100, y: 100, w: 5, h: 5 })
+            .expect_err("起点越界应报错");
+        assert!(err.contains("超出截图范围"), "错误应说明越界：{err}");
     }
 
     // 保留对错误类型的引用，避免 import 被裁（mock 语义文档化）。

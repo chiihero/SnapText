@@ -7,10 +7,8 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
 import { NButton, NSpace, NTag, useMessage } from "naive-ui";
 import { api, type SelectResult } from "../api";
-import { useCaptureStore } from "../stores/capture";
 
 const message = useMessage();
-const store = useCaptureStore();
 const result = ref<SelectResult | null>(null);
 const canvas = ref<HTMLCanvasElement | null>(null);
 const img = new Image();
@@ -19,8 +17,12 @@ const perLineOriginal = ref<boolean[]>([]);
 const fontSize = ref(14);
 
 onMounted(async () => {
-  result.value = store.lastResult;
-  if (!result.value) {
+  // 主动拉取后端缓存的选区结果（select_region 写入 last_result）。
+  // Pinia 不跨窗口共享，结果窗口是独立 WebView，不能用 store。
+  try {
+    result.value = await api.getLastResult();
+  } catch (e) {
+    message.error(`加载结果失败：${e}`);
     await getCurrentWindow().close();
     return;
   }
@@ -29,6 +31,8 @@ onMounted(async () => {
   img.src = api.fileSrc(result.value.shot_path);
   const cfg = await api.getConfig();
   fontSize.value = Math.max(10, Math.min(24, cfg.ui.card_font_size || 14));
+  // ui.show_original（默认 true）：结果窗口默认显示原文，可点行切译文。
+  showAllOriginal.value = cfg.ui.show_original;
   if (cfg.ui.auto_copy_translation && result.value.translated) {
     await writeText(result.value.translated).catch(() => {});
   }

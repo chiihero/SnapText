@@ -113,6 +113,7 @@ export const api = {
   triggerCapture: () => invoke<void>("trigger_capture_cmd"),
   selectRegion: (monitorId: string, bbox: Bbox) =>
     invoke<SelectResult>("select_region", { monitorId, bbox }),
+  getLastResult: () => invoke<SelectResult>("get_last_result"),
   saveImageCopy: (sourcePath: string, destPath: string) =>
     invoke<void>("save_image_copy", { sourcePath, destPath }),
   logDiag: (tag: string, message: string) => invoke<void>("log_diag", { tag, message }),

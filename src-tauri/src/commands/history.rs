@@ -78,16 +78,19 @@ pub async fn history_search(
 }
 
 /// 取单条记录的截图（base64 data URL，前端 <img> 直接用）。
+///
+/// 按主键精确查单列 `screenshot_png`，不依赖 list（旧实现 list(10000) 全表拉 BLOB，
+/// 记录超 1 万条会丢图且每次点选全表读 BLOB）。
 #[tauri::command]
 pub async fn history_get_screenshot(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<Option<String>, String> {
-    let records = state.history.list(10000).await.map_err(|e| e.to_string())?;
-    let png = records
-        .into_iter()
-        .find(|r| r.id == id)
-        .and_then(|r| r.screenshot_png);
+    let png = state
+        .history
+        .get_screenshot(id)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(png.map(|bytes| {
         let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
         format!("data:image/png;base64,{b64}")

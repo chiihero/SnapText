@@ -89,6 +89,7 @@ fn main() {
             commands::capture::log_diag,
             commands::capture::check_file,
             commands::ocr_translate::select_region,
+            commands::ocr_translate::get_last_result,
             window::trigger_capture_cmd,
             commands::history::history_list,
             commands::history::history_search,
