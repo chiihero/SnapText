@@ -138,6 +138,17 @@ impl HistoryStore for SqliteHistoryStore {
             total_records: total,
         })
     }
+
+    async fn get_screenshot(&self, id: i64) -> Result<Option<Vec<u8>>, CoreError> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>, HistoryError> {
+            let conn = pool.get().map_err(|e| HistoryError::Pool(e.to_string()))?;
+            dao::get_screenshot(&conn, id)
+        })
+        .await
+        .map_err(|e| CoreError::History(HistoryError::Db(format!("历史截图读取线程异常：{e}"))))?
+        .map_err(CoreError::History)
+    }
 }
 
 #[cfg(test)]
@@ -220,5 +231,65 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM translation_history", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn get_screenshot_returns_png_for_existing_id() {
+        // 取单条截图：不依赖 list 上限，按 id 精确查单列。
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SqliteHistoryStore::open(tmp.path().join("d.db")).unwrap();
+        let mut rec = sample_record();
+        rec.screenshot_png = Some(vec![1, 2, 3, 4]);
+        store.insert(rec).await.unwrap();
+        // 取回最新一条的 id。
+        let listed = store.list(1).await.unwrap();
+        let id = listed[0].id;
+
+        let png = store.get_screenshot(id).await.unwrap();
+        assert_eq!(png, Some(vec![1, 2, 3, 4]));
+    }
+
+    #[tokio::test]
+    async fn get_screenshot_none_for_missing_id() {
+        // id 不存在：返回 None（不报错）。
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SqliteHistoryStore::open(tmp.path().join("e.db")).unwrap();
+        assert_eq!(store.get_screenshot(9999).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn get_screenshot_none_when_no_png_stored() {
+        // 记录存在但无截图：返回 None。
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SqliteHistoryStore::open(tmp.path().join("f.db")).unwrap();
+        store.insert(sample_record()).await.unwrap();
+        let id = store.list(1).await.unwrap()[0].id;
+        assert_eq!(store.get_screenshot(id).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn list_reads_back_v002_fields_when_populated() {
+        // 回归：ocr_lines_json / line_translations_json / screenshot_png 列索引必须正确。
+        // 旧代码把 index 17(=screenshot_png BLOB) 当 ocr_lines_json(String) 读，
+        // 任何带截图的记录 list 都会因 BLOB→String 类型不符而崩溃。
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SqliteHistoryStore::open(tmp.path().join("v002.db")).unwrap();
+        let mut rec = sample_record();
+        rec.screenshot_png = Some(vec![9, 9, 9]);
+        rec.ocr_lines = Some(vec![crate::types::OcrLine {
+            text: "hi".into(),
+            bbox: crate::types::Bbox { x: 1, y: 2, w: 3, h: 4 },
+            confidence: 0.5,
+            writing_direction: crate::types::WritingDirection::Horizontal,
+        }]);
+        rec.line_translations = Some(vec!["嗨".into()]);
+        store.insert(rec).await.unwrap();
+
+        let listed = store.list(1).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        let r = &listed[0];
+        assert_eq!(r.screenshot_png.as_deref(), Some(&[9, 9, 9][..]));
+        assert_eq!(r.ocr_lines.as_ref().unwrap()[0].text, "hi");
+        assert_eq!(r.line_translations.as_ref().unwrap()[0], "嗨");
     }
 }

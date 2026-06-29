@@ -62,4 +62,8 @@ pub trait HistoryStore: Send + Sync {
     /// 清空全部。
     async fn clear_all(&self) -> Result<u64, CoreError>;
     async fn stats(&self) -> Result<HistoryStats, CoreError>;
+    /// 按主键取该条的截图 PNG（仅查 `screenshot_png` 单列，避免全表拉 BLOB）。
+    ///
+    /// 给历史面板详情用：`list` 不返回二进制，点选时单独调本接口取图。
+    async fn get_screenshot(&self, id: i64) -> Result<Option<Vec<u8>>, CoreError>;
 }

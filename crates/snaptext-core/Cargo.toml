@@ -16,6 +16,9 @@ async-trait = { workspace = true }
 tokio = { workspace = true }
 # Windows 截图：WGC（Graphics Capture API）+ DXGI Desktop Duplication（见 DU-02）。
 windows-capture = "2.0"
+# Win32 DPI 查询（GetDpiForMonitor）：算显示器 scale，供选区坐标换算。
+# 与 windows-capture 共用版本（见 lock），仅启用所需 feature。
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi"] }
 # 模型下载与校验（DU-03）
 reqwest = { workspace = true }
 sha2 = { workspace = true }

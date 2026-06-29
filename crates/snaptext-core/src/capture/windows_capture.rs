@@ -185,11 +185,11 @@ fn capture_wgc(monitor: Monitor) -> Result<RgbaImage, CaptureError> {
     );
     let control = OneShotFrameCapture::start_free_threaded(settings)
         .map_err(|e| CaptureError::BackendUnavailable(format!("WGC 会话启动失败：{e:?}")))?;
-    let result = rx
-        .recv_timeout(WGC_FRAME_TIMEOUT)
-        .map_err(|e| CaptureError::CaptureFailed(format!("WGC 等待首帧失败：{e}")))?;
-    // 停止会话并回收线程（忽略停止阶段可能的错误）。
+    // 关键：无论 recv_timeout 成功还是超时/出错，都必须 stop() 回收会话线程，
+    // 否则每次失败截图泄漏一个 WGC 后台捕获会话（B3）。
+    let result = rx.recv_timeout(WGC_FRAME_TIMEOUT);
     let _ = control.stop();
+    let result = result.map_err(|e| CaptureError::CaptureFailed(format!("WGC 等待首帧失败：{e}")))?;
     result.map_err(CaptureError::CaptureFailed)
 }
 
@@ -266,17 +266,40 @@ fn monitor_to_info(monitor: &Monitor) -> Result<MonitorInfo, CaptureError> {
     let width = monitor.width().map_err(monitor_err)?;
     let height = monitor.height().map_err(monitor_err)?;
     let is_primary = Monitor::primary().map(|p| p == *monitor).unwrap_or(false);
+    // 截图帧尺寸 = 物理像素（windows-capture width/height 取自 dmPelsWidth/Height），
+    // 前端窗口是逻辑像素；scale = dpi/96 用于前端把框选的逻辑坐标换算成物理坐标。
+    // MVP 仅支持单显示器：x/y 固定 0（多屏 origin 需 GetMonitorInfoW 的 rcMonitor，未做）。
+    let scale = dpi_scale(monitor);
     Ok(MonitorInfo {
         id: MonitorId::new(device_name),
         name: friendly,
         width,
         height,
-        // NOTE(DU-08)：DPI 缩放与虚拟桌面坐标在 Overlay 选区时精确化。
-        scale: 1.0,
+        scale,
         x: 0,
         y: 0,
         is_primary,
     })
+}
+
+/// 取显示器 DPI scale（`dpi/96.0`）。查询失败回退 1.0（不阻断截图）。
+///
+/// 前端选区坐标换算依赖此值：物理像素 = 逻辑像素 × scale。
+/// 高 DPI（如 150% 缩放）下 scale=1.5，错值会导致框选区域与实际裁剪错位。
+fn dpi_scale(monitor: &Monitor) -> f32 {
+    use windows::Win32::Graphics::Gdi::HMONITOR;
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MONITOR_DPI_TYPE};
+
+    // windows-capture 的 as_raw_hmonitor 返回 *mut c_void（即 HMONITOR 句柄）。
+    let hmon = HMONITOR(monitor.as_raw_hmonitor());
+    let (mut dpi_x, mut _dpi_y) = (0u32, 0u32);
+    let ok = unsafe { GetDpiForMonitor(hmon, MONITOR_DPI_TYPE(0), &mut dpi_x, &mut _dpi_y).is_ok() };
+    if ok && dpi_x > 0 {
+        dpi_x as f32 / 96.0
+    } else {
+        // 兜底：GetDpiForMonitor 极少失败（仅句柄无效），失败时按 100% 处理。
+        1.0
+    }
 }
 
 fn monitor_err(e: MonitorError) -> CaptureError {

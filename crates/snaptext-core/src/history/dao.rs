@@ -1,6 +1,6 @@
 //! CRUD 操作（P0 仅 `insert`，DU-15 补 `list` / `delete_before` / `stats`）。
 
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::time::SystemTime;
 
 use crate::error::HistoryError;
@@ -162,6 +162,24 @@ pub fn stats(conn: &Connection) -> Result<u64, HistoryError> {
     Ok(total as u64)
 }
 
+/// 按主键取单条的截图 PNG（仅查 `screenshot_png` 列）。
+///
+/// 避免 `history_get_screenshot` 为了找一条记录去全表 `list`（含 BLOB）——
+/// 记录超过 list 上限时旧记录会取不到，且每次点选全表读 BLOB 浪费。
+pub fn get_screenshot(conn: &Connection, id: i64) -> Result<Option<Vec<u8>>, HistoryError> {
+    // 闭包返回该行 screenshot_png（列本身可空 → Option<Vec<u8>>）；
+    // optional() 再处理"该 id 行是否存在"，故外层再一层 Option，flatten 合并。
+    let png: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT screenshot_png FROM translation_history WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, Option<Vec<u8>>>(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(png)
+}
+
 /// 行 → HistoryRecord（列顺序同 SELECT_COLS）。
 fn row_to_record(row: &Row) -> rusqlite::Result<HistoryRecord> {
     let created_str: String = row.get(1)?;
@@ -178,8 +196,8 @@ fn row_to_record(row: &Row) -> rusqlite::Result<HistoryRecord> {
         (Some(x), Some(y), Some(w), Some(h)) => Some(Bbox { x, y, w, h }),
         _ => None,
     };
-    let ocr_lines_json: Option<String> = row.get(17)?;
-    let line_translations_json: Option<String> = row.get(18)?;
+    let ocr_lines_json: Option<String> = row.get(18)?;
+    let line_translations_json: Option<String> = row.get(19)?;
     Ok(HistoryRecord {
         id: row.get(0)?,
         created_at,
