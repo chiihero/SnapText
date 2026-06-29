@@ -2,7 +2,7 @@
 //!
 //! CapturedFrame 含 RgbaImage（不可序列化），截图结果缓存进 state.captured，
 //! 同时编码 PNG 写临时文件，用 `tauri::path` + `convertFileSrc` 暴露给 webview。
-//! 前端选区窗口拿 shot_url 画全屏图，框选后调 select_region 传回 bbox。
+//! 前端选区窗口拿 shot_url 画全屏图，框选后调 crop_region 传回 bbox（三层命令第 1 层）。
 
 use std::io::Cursor;
 
@@ -142,7 +142,7 @@ pub async fn do_capture_all(
     Ok(dtos)
 }
 
-// select_region（选区→OCR→翻译→配对→历史）在 ocr_translate.rs 实现。
+// crop_region / recognize_region / translate_region（三层命令）在 ocr_translate.rs 实现。
 
 /// 保存结果图片：把指定路径的截图复制到用户选定路径。
 ///

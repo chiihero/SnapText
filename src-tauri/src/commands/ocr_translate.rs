@@ -1,142 +1,235 @@
-//! OCR + 翻译 + 行级配对命令：select_region（选区→识别→翻译→配对→落库）。
+//! OCR + 翻译 + 行级配对命令（三层分阶段）。
 //!
-//! 这是核心编排，从旧 orchestrator::region_selected 搬来，去掉 channel，
-//! 改为命令直接返回结果。整段翻译后用 align_lines 按行配对，译文行数与原文
-//! 不一致时多余并入末行 / 缺失补空。
+//! 旧 `select_region` 是一个干完全部的大命令（裁剪→OCR→翻译→配对→落库），
+//! 框选抬起后选区窗要 await 整个管线几秒才开结果窗。拆成三层命令：
+//! - `crop_region`：裁剪缓存帧 + 写临时 PNG（抬起即调，几十 ms）
+//! - `recognize_region`：从裁剪图 OCR + 后处理，返回 OCR 行与整段原文
+//! - `translate_region`：整段翻译 + `align_lines` 行配对 + 写历史
+//!
+//! 三层之间用 `state.last_crop` / `state.last_ocr` 接力，沿用"后端缓存+前端主动拉取"
+//! 反竞态模式（不引入事件）。核心管线拆为 `run_ocr` / `run_translate` 两纯函数，
+//! 不依赖 Tauri，便于 mock 测试。
 
 use std::io::Cursor;
-use std::time::Instant;
 
 use image::DynamicImage;
 use serde::Serialize;
 use snaptext_core::history::HistoryRecord;
 use snaptext_core::ocr::postprocess::clean_ocr_text;
 use snaptext_core::translate::postprocess::clean_translation;
-use snaptext_core::types::{Bbox, Lang, MonitorId, OcrLine, TranslateRequest};
+use snaptext_core::types::{Bbox, Lang, OcrLine, TranslateRequest};
 use tauri::{AppHandle, Manager, State};
 
 use crate::state::AppState;
 
-/// 选区结果：返回给前端结果窗口渲染图上覆盖。
-#[derive(Serialize, Clone)]
-pub struct SelectResult {
-    /// 裁剪图绝对路径（前端用 convertFileSrc 转 webview URL）。
+/// 裁剪阶段缓存：给 `recognize_region` 提供 OCR 输入图。
+/// `shot_path` 同时供结果窗 onMounted 渲染原图（在 OCR 之前就能显示）。
+pub struct LastCrop {
     pub shot_path: String,
-    /// OCR 行（含 bbox），前端按 bbox 定位译文。
-    pub ocr_lines: Vec<OcrLine>,
-    /// 与 ocr_lines 按索引配对的逐行译文。
-    pub translations: Vec<String>,
-    /// 整段原文（拼接，便于复制）。
-    pub original: String,
-    /// 整段译文（便于复制）。
-    pub translated: String,
-    pub provider: String,
-    pub elapsed_ms: u64,
+    pub image: DynamicImage,
+    pub monitor_id: String,
+    pub bbox: Bbox,
 }
 
-/// 选区→OCR→翻译→配对→落库。
+/// OCR 阶段缓存：给 `translate_region` 提供原文与定位。
+pub struct LastOcr {
+    pub ocr_lines: Vec<OcrLine>,
+    pub original: String,
+    pub monitor_id: String,
+    pub bbox: Bbox,
+}
+
+/// `crop_region` 返回前端的最小信息：结果窗拿它渲染原图。
+#[derive(Serialize)]
+pub struct CropResult {
+    /// 裁剪图绝对路径（前端用 convertFileSrc 转 webview URL）。
+    pub shot_path: String,
+}
+
+/// `recognize_region` 返回：OCR 行 + 整段原文。结果窗据此先显示原文。
+#[derive(Serialize)]
+pub struct OcrResult {
+    pub ocr_lines: Vec<OcrLine>,
+    pub original: String,
+}
+
+/// `translate_region` 返回：逐行译文 + 整段译文 + Provider + 耗时。
+#[derive(Serialize)]
+pub struct TranslateResult {
+    pub translations: Vec<String>,
+    pub translated: String,
+    pub provider: String,
+}
+
+/// 第 1 层：裁剪缓存帧的 bbox 区 + 写临时 PNG。
 ///
-/// `monitor_id` + `bbox` 由前端选区窗口框选后传入；bbox 是虚拟桌面坐标。
+/// 抬起即调，几十 ms。返回路径供结果窗 onMounted 渲染原图；裁剪图同时
+/// 缓存进 `state.last_crop` 供 `recognize_region` OCR。
 #[tauri::command]
-pub async fn select_region(
+pub async fn crop_region(
     app: AppHandle,
     state: State<'_, AppState>,
     monitor_id: String,
     bbox: Bbox,
-) -> Result<SelectResult, String> {
-    let start = Instant::now();
-
-    // 1. 从缓存帧找该屏 + 裁剪。
-    tracing::info!(monitor = %monitor_id, bbox = ?bbox, "select_region 开始，裁剪");
-    let crop: DynamicImage = {
+) -> Result<CropResult, String> {
+    let (image, shot_path) = {
         let captured = state.captured.lock().await;
         let frame = captured
             .iter()
             .find(|f| f.monitor.id.as_str() == monitor_id)
             .ok_or_else(|| format!("找不到显示器 {monitor_id} 的缓存帧"))?;
-        crop_frame(frame, bbox)?
+        let image = crop_frame(frame, bbox)?;
+        let shot_path = write_crop_png(&app, &image, &monitor_id)?;
+        (image, shot_path)
     };
-    tracing::info!(crop_w = crop.width(), crop_h = crop.height(), elapsed_ms = start.elapsed().as_millis(), "裁剪完成，开始 OCR");
+    *state.last_crop.lock().await = Some(LastCrop {
+        shot_path: shot_path.clone(),
+        image,
+        monitor_id,
+        bbox,
+    });
+    Ok(CropResult { shot_path })
+}
 
-    // 2-3. OCR + 翻译 + 配对（核心管线，抽成纯函数便于 mock 测试）。
+/// 取最近一次裁剪的图片路径（结果窗口 onMounted 拉取，先渲染原图再 OCR）。
+///
+/// Pinia 不跨窗口共享，Capture.vue 拿到的 CropResult 传不到 Result.vue，
+/// 故后端缓存 last_crop、由结果窗口主动调本命令取路径。
+#[tauri::command]
+pub async fn get_last_crop(state: State<'_, AppState>) -> Result<CropResult, String> {
+    let guard = state.last_crop.lock().await;
+    guard
+        .as_ref()
+        .map(|c| CropResult {
+            shot_path: c.shot_path.clone(),
+        })
+        .ok_or_else(|| "无缓存裁剪图".to_string())
+}
+
+/// 第 2 层：OCR + 后处理，返回 OCR 行与整段原文。
+///
+/// 从 `state.last_crop` 取裁剪图（`crop_region` 写入）。结果缓存进
+/// `state.last_ocr` 供 `translate_region`。
+#[tauri::command]
+pub async fn recognize_region(
+    state: State<'_, AppState>,
+) -> Result<OcrResult, String> {
+    let (image, monitor_id, bbox) = {
+        let last = state.last_crop.lock().await;
+        let last = last
+            .as_ref()
+            .ok_or_else(|| "无缓存裁剪图（请先框选）".to_string())?;
+        (
+            last.image.clone(),
+            last.monitor_id.clone(),
+            last.bbox,
+        )
+    };
     let cfg = state.config.lock().await.clone();
-    let provider = state.translate.lock().await.clone();
-    let ocr_start = Instant::now();
-    let outcome = run_ocr_translate(&crop, state.ocr.as_ref(), provider.as_deref(), &cfg).await?;
-    tracing::info!(lines = outcome.ocr_lines.len(), elapsed_ms = ocr_start.elapsed().as_millis(), "OCR+翻译完成");
+    let ocr_lines = run_ocr(&image, state.ocr.as_ref(), &cfg).await?;
+    let original: String = ocr_lines
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if original.trim().is_empty() {
+        return Err("识别结果为空".into());
+    }
+    *state.last_ocr.lock().await = Some(LastOcr {
+        ocr_lines: ocr_lines.clone(),
+        original: original.clone(),
+        monitor_id,
+        bbox,
+    });
+    Ok(OcrResult { ocr_lines, original })
+}
 
-    // 4. 裁剪图编码 PNG（返回绝对路径，前端用 convertFileSrc 转 URL）。
-    let shot_path = write_crop_png(&app, &crop, &monitor_id)?;
+/// 第 3 层：整段翻译 + 行配对 + 写历史。
+///
+/// 从 `state.last_ocr` 取原文与行数（`recognize_region` 写入）。
+#[tauri::command]
+pub async fn translate_region(
+    state: State<'_, AppState>,
+) -> Result<TranslateResult, String> {
+    let (ocr_lines, original, monitor_id, bbox) = {
+        let last = state.last_ocr.lock().await;
+        let last = last
+            .as_ref()
+            .ok_or_else(|| "无缓存 OCR 结果（请先识别）".to_string())?;
+        (
+            last.ocr_lines.clone(),
+            last.original.clone(),
+            last.monitor_id.clone(),
+            last.bbox,
+        )
+    };
+    let cfg = state.config.lock().await.clone();
+    let provider = state
+        .translate
+        .lock()
+        .await
+        .clone()
+        .ok_or_else(|| "未配置翻译 API Key，请在设置中填写".to_string())?;
 
-    // 5. 写历史。
+    let (translations, resp) =
+        run_translate(&original, ocr_lines.len(), provider.as_ref(), &cfg).await?;
+
+    // 写历史（与旧 select_region 同：四要素齐了再落库）。
     let record = HistoryRecord {
         id: 0,
         created_at: std::time::SystemTime::now(),
-        source_lang: outcome.resp.source,
-        target_lang: outcome.resp.target,
-        original_text: outcome.original.clone(),
-        translated_text: outcome.resp.translated_text.clone(),
-        provider: outcome.resp.provider.clone(),
-        model: outcome.resp.model.clone(),
-        prompt_tokens: outcome.resp.token_usage.map(|u| u.prompt_tokens),
-        completion_tokens: outcome.resp.token_usage.map(|u| u.completion_tokens),
+        source_lang: resp.source,
+        target_lang: resp.target,
+        original_text: original,
+        translated_text: resp.translated_text.clone(),
+        provider: resp.provider.clone(),
+        model: resp.model.clone(),
+        prompt_tokens: resp.token_usage.map(|u| u.prompt_tokens),
+        completion_tokens: resp.token_usage.map(|u| u.completion_tokens),
         total_cost_cny_milli: None,
-        monitor_id: Some(monitor_id.clone()),
+        monitor_id: Some(monitor_id),
         bbox: Some(bbox),
         notes: None,
-        screenshot_png: Some({
-            let mut buf = Cursor::new(Vec::new());
-            crop.write_to(&mut buf, image::ImageFormat::Png)
-                .map_err(|e| format!("编码历史截图失败：{e}"))?;
-            buf.into_inner()
-        }),
-        ocr_lines: Some(outcome.ocr_lines.clone()),
-        line_translations: Some(outcome.translations.clone()),
+        // 裁剪图已由 crop_region 写盘；此处复用同一张图编码入历史。
+        screenshot_png: {
+            let image = state
+                .last_crop
+                .lock()
+                .await
+                .as_ref()
+                .map(|c| c.image.clone());
+            match image {
+                Some(img) => {
+                    let mut buf = Cursor::new(Vec::new());
+                    img.write_to(&mut buf, image::ImageFormat::Png)
+                        .map_err(|e| format!("编码历史截图失败：{e}"))?;
+                    Some(buf.into_inner())
+                }
+                None => None,
+            }
+        },
+        ocr_lines: Some(ocr_lines.clone()),
+        line_translations: Some(translations.clone()),
     };
     if let Err(e) = state.history.insert(record).await {
         tracing::warn!(error = %e, "写入历史失败");
     }
 
-    let result = SelectResult {
-        shot_path,
-        ocr_lines: outcome.ocr_lines,
-        translations: outcome.translations,
-        original: outcome.original,
-        translated: outcome.resp.translated_text,
-        provider: outcome.resp.provider.to_string(),
-        elapsed_ms: start.elapsed().as_millis() as u64,
-    };
-    // 缓存进 state：结果窗口是独立 WebView，Pinia 不跨窗口共享，
-    // 改由 Result.vue onMounted 调 get_last_result 主动拉取（反竞态，与截图缓存同款）。
-    *state.last_result.lock().await = Some(result.clone());
-    Ok(result)
+    Ok(TranslateResult {
+        translations,
+        translated: resp.translated_text,
+        provider: resp.provider.to_string(),
+    })
 }
 
-/// 取最近一次选区结果（结果窗口 onMounted 拉取）。
-///
-/// Pinia 状态不跨窗口共享，选区窗口写入的结果结果窗口读不到，
-/// 故缓存后端、由结果窗口主动调本命令拉取。无缓存时报错。
-#[tauri::command]
-pub async fn get_last_result(state: State<'_, AppState>) -> Result<SelectResult, String> {
-    let guard = state.last_result.lock().await;
-    guard
-        .clone()
-        .ok_or_else(|| "无缓存选区结果".to_string())
-}
-
-/// OCR + 翻译 + 行级配对的核心管线（不依赖 Tauri，便于 mock Provider 单元/集成测试）。
-///
-/// 输入裁剪图与 Provider 引用，返回 OCR 行、逐行译文、整段原文、翻译响应。
-/// select_region 调它，再处理 Tauri 相关（写临时文件、写历史）。
-pub async fn run_ocr_translate(
-    crop: &DynamicImage,
+/// OCR 纯函数：识别 + 可选后处理。不依赖 Tauri，便于 mock 测试。
+pub async fn run_ocr(
+    image: &DynamicImage,
     ocr: &dyn snaptext_core::ocr::OcrProvider,
-    translate: Option<&dyn snaptext_core::translate::TranslationProvider>,
     cfg: &snaptext_core::Config,
-) -> Result<OcrTranslateOutcome, String> {
-    // OCR（含可选后处理）。
+) -> Result<Vec<OcrLine>, String> {
     let mut lines = ocr
-        .recognize(crop, Lang::Auto)
+        .recognize(image, Lang::Auto)
         .await
         .map_err(|e| format!("OCR 失败：{e}"))?;
     if cfg.ocr.postprocess {
@@ -144,15 +237,19 @@ pub async fn run_ocr_translate(
             l.text = clean_ocr_text(&l.text);
         }
     }
-    let original: String = lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
-    if original.trim().is_empty() {
-        return Err("识别结果为空".into());
-    }
+    Ok(lines)
+}
 
-    // 翻译（含可选后处理）。
-    let provider = translate.ok_or_else(|| "未配置翻译 API Key，请在设置中填写".to_string())?;
+/// 翻译纯函数：整段翻译 + 可选后处理 + `align_lines` 行配对。
+/// 不依赖 Tauri，便于 mock 测试。
+pub async fn run_translate(
+    original: &str,
+    n_lines: usize,
+    provider: &dyn snaptext_core::translate::TranslationProvider,
+    cfg: &snaptext_core::Config,
+) -> Result<(Vec<String>, snaptext_core::types::TranslateResponse), String> {
     let req = TranslateRequest {
-        text: original.clone(),
+        text: original.to_string(),
         source: Lang::Auto,
         target: cfg.translate.target_lang,
         context_hint: None,
@@ -165,24 +262,8 @@ pub async fn run_ocr_translate(
     if cfg.translate.postprocess {
         resp.translated_text = clean_translation(&resp.translated_text);
     }
-
-    // 行级配对。
-    let translations = align_lines(&resp.translated_text, lines.len());
-    Ok(OcrTranslateOutcome {
-        ocr_lines: lines,
-        translations,
-        original,
-        resp,
-    })
-}
-
-/// run_ocr_translate 的产出。
-#[cfg_attr(test, derive(Debug))]
-pub struct OcrTranslateOutcome {
-    pub ocr_lines: Vec<OcrLine>,
-    pub translations: Vec<String>,
-    pub original: String,
-    pub resp: snaptext_core::types::TranslateResponse,
+    let translations = align_lines(&resp.translated_text, n_lines);
+    Ok((translations, resp))
 }
 
 /// 裁剪缓存帧的 bbox 区域（虚拟桌面坐标 → 屏内坐标）。
@@ -259,10 +340,6 @@ pub fn align_lines(translated: &str, n_lines: usize) -> Vec<String> {
     }
 }
 
-/// 下面的类型仅用于编译期类型检查保留（避免 unused 警告）。
-#[allow(dead_code)]
-fn _types_used(_: MonitorId) {}
-
 #[cfg(test)]
 mod tests {
     use super::align_lines;
@@ -313,7 +390,7 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     //! 核心管线（OCR→翻译→配对）集成测试，用 mock Provider 覆盖端到端逻辑。
-    //! 取代旧 snaptext-app/orchestrator.rs 的 full_pipeline 测试（随 crate 删除丢失）。
+    //! 拆分后 run_ocr / run_translate 分别测试，仍覆盖旧的整条管线语义。
     use super::*;
     use async_trait::async_trait;
     use image::RgbaImage;
@@ -408,51 +485,32 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    async fn pipeline_ocr_translate_aligns() {
-        // 端到端：OCR 两行 → 翻译 → align 配对 → 译文行数 == 原文行数。
-        let ocr = mock_ocr();
-        let translate = MockTranslate;
-        let cfg = default_config();
-        let crop = dummy_crop();
-        let outcome = run_ocr_translate(&crop, &ocr, Some(&translate), &cfg)
-            .await
-            .expect("管线应成功");
-
-        assert_eq!(outcome.ocr_lines.len(), 2);
-        assert_eq!(outcome.original, "Hello\nWorld");
-        // 译文逐行配对。
-        assert_eq!(outcome.translations, vec!["[译] Hello", "[译] World"]);
-        // 整段译文。
-        assert_eq!(outcome.resp.translated_text, "[译] Hello\n[译] World");
-    }
-
-    #[tokio::test]
-    async fn pipeline_without_provider_errors() {
-        // 缺翻译 Provider：报错提示去设置，不 panic。
+    async fn run_ocr_returns_lines() {
+        // OCR 两行：run_ocr 直接返回（后处理默认 trim）。
         let ocr = mock_ocr();
         let cfg = default_config();
         let crop = dummy_crop();
-        let err = run_ocr_translate(&crop, &ocr, None, &cfg)
-            .await
-            .expect_err("缺 Provider 应报错");
-        assert!(err.contains("API Key"), "错误应提示配置 Key：{err}");
+        let lines = run_ocr(&crop, &ocr, &cfg).await.expect("OCR 应成功");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].text, "Hello");
+        assert_eq!(lines[1].text, "World");
     }
 
     #[tokio::test]
-    async fn pipeline_empty_ocr_errors() {
-        // OCR 全空：报错"识别结果为空"。
-        let ocr = MockOcr { lines: vec![] };
+    async fn run_translate_aligns() {
+        // 翻译 + align：两行原文配两行译文。
         let translate = MockTranslate;
         let cfg = default_config();
-        let crop = dummy_crop();
-        let err = run_ocr_translate(&crop, &ocr, Some(&translate), &cfg)
-            .await
-            .expect_err("空 OCR 应报错");
-        assert!(err.contains("为空"), "错误应说明识别为空：{err}");
+        let (translations, resp) =
+            run_translate("Hello\nWorld", 2, &translate, &cfg)
+                .await
+                .expect("翻译应成功");
+        assert_eq!(translations, vec!["[译] Hello", "[译] World"]);
+        assert_eq!(resp.translated_text, "[译] Hello\n[译] World");
     }
 
     #[tokio::test]
-    async fn pipeline_postprocess_applied() {
+    async fn run_ocr_postprocess_applied() {
         // 开启 OCR 后处理：文本经 clean_ocr_text（去 CJK 空格等）。
         let ocr = MockOcr {
             lines: vec![OcrLine {
@@ -462,15 +520,12 @@ mod integration_tests {
                 writing_direction: WritingDirection::Horizontal,
             }],
         };
-        let translate = MockTranslate;
         let mut cfg = default_config();
         cfg.ocr.postprocess = true;
         let crop = dummy_crop();
-        let outcome = run_ocr_translate(&crop, &ocr, Some(&translate), &cfg)
-            .await
-            .expect("管线应成功");
+        let lines = run_ocr(&crop, &ocr, &cfg).await.expect("OCR 应成功");
         // postprocess 后原文应被清洗（trim）。
-        assert!(!outcome.original.starts_with(' '), "原文应被 trim：{}", outcome.original);
+        assert!(!lines[0].text.starts_with(' '), "原文应被 trim：{}", lines[0].text);
     }
 
     #[test]
@@ -522,7 +577,6 @@ mod integration_tests {
     #[test]
     fn crop_frame_bbox_beyond_image_is_clamped() {
         // B6：bbox 超出图像右下边界 → clamp 到边界，不 panic。
-        // 多屏坐标错位或框选越出屏幕时会触发此路径。
         let frame = CapturedFrame {
             monitor: MonitorInfo {
                 id: MonitorId::new("D1"),
@@ -571,4 +625,3 @@ mod integration_tests {
     #[allow(dead_code)]
     fn _err_types(_: CaptureError, _: OcrError, _: TranslateError) {}
 }
-

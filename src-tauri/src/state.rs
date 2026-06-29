@@ -13,7 +13,7 @@ use snaptext_core::translate::{build_provider, TranslationProvider};
 use snaptext_core::Config;
 use tokio::sync::Mutex;
 
-use crate::commands::ocr_translate::SelectResult;
+use crate::commands::ocr_translate::{LastCrop, LastOcr};
 
 /// 全局应用状态，经 `app.manage()` 注入，命令用 `State<'_, AppState>` 取用。
 pub struct AppState {
@@ -25,13 +25,12 @@ pub struct AppState {
     pub config: Mutex<Config>,
     /// 共享 HTTP 客户端（翻译 Provider 构造 + 模型下载复用）。
     pub client: reqwest::Client,
-    /// 最近一次全屏截图缓存（capture_all 写入，select_region 读取裁剪）。
+    /// 最近一次全屏截图缓存（capture_all 写入，crop_region 读取裁剪）。
     pub captured: Mutex<Vec<snaptext_core::types::CapturedFrame>>,
-    /// 最近一次选区结果缓存（select_region 写入，Result 窗口 onMounted 拉取）。
-    ///
-    /// 与 captured 同款反竞态模式：select_region 完成时结果窗口可能还没加载，
-    /// 前端事件/Pinia 跨窗口不共享，故缓存后端、由结果窗口主动命令拉取。
-    pub last_result: Mutex<Option<SelectResult>>,
+    /// 三层命令接力缓存：crop_region 写入，recognize_region 读取 OCR。
+    pub last_crop: Mutex<Option<LastCrop>>,
+    /// 三层命令接力缓存：recognize_region 写入，translate_region 读取翻译。
+    pub last_ocr: Mutex<Option<LastOcr>>,
 }
 
 impl AppState {
@@ -73,7 +72,8 @@ impl AppState {
             config: Mutex::new(config),
             client,
             captured: Mutex::new(Vec::new()),
-            last_result: Mutex::new(None),
+            last_crop: Mutex::new(None),
+            last_ocr: Mutex::new(None),
         })
     }
 }

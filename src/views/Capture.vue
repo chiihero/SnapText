@@ -1,14 +1,14 @@
 <script setup lang="ts">
-// 选区窗口：全屏显示主屏截图 + Canvas 鼠标框选 + 抬起调 select_region。
+// 选区窗口：全屏显示主屏截图 + Canvas 鼠标框选 + 抬起仅调 crop_region。
 //
 // 截图在 Rust 端 trigger_capture_cmd 里"先截图再开窗"完成（避免窗口盖住桌面
 // 截到白屏自己）。窗口打开后主动调 get_last_capture 拉取已缓存截图渲染。
-// 框选完成后调 select_region（结果存后端 last_result），然后创建结果窗口
-// （label=result），结果窗口 onMounted 调 get_last_result 主动拉取。
+// 框选抬起只跑 crop_region（裁剪+写临时图，几十 ms），立即创建结果窗口，
+// 关闭选区窗。OCR/翻译由结果窗口 onMounted 分阶段调用（recognize/translate）。
 import { onMounted, ref } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { api, type MonitorDto, type SelectResult } from "../api";
+import { api, type MonitorDto } from "../api";
 
 const canvas = ref<HTMLCanvasElement | null>(null);
 const status = ref("加载截图…");
@@ -89,16 +89,16 @@ async function onUp() {
     w: Math.round(w * scale),
     h: Math.round(h * scale),
   };
-  status.value = "识别中…";
+  status.value = "处理中…";
   draw();
   try {
-    const result: SelectResult = await api.selectRegion(primary.value.id, bbox);
-    // 结果已由后端 select_region 缓存（last_result），结果窗口 onMounted 拉取。
-    // 打开结果窗口。
+    // 仅裁剪+写临时图（几十 ms），不等 OCR/翻译。后端 crop_region 把裁剪图
+    // 缓存进 last_crop，结果窗口 onMounted 依次调 recognize/translate。
+    await api.cropRegion(primary.value.id, bbox);
     await new WebviewWindow("result", {
       url: "index.html#/result",
       title: "SnapText 译文",
-      width: Math.min(result.shot_path ? 800 : 480, 1200),
+      width: 800,
       height: 600,
       resizable: true,
       center: true,
@@ -106,7 +106,7 @@ async function onUp() {
     // 关闭选区窗口。
     await getCurrentWindow().close();
   } catch (e) {
-    status.value = `识别失败：${e}`;
+    status.value = `处理失败：${e}`;
   }
 }
 

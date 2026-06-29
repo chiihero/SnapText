@@ -20,9 +20,12 @@ export interface OcrLine {
   writing_direction: "Horizontal" | "Vertical";
 }
 
-export type Tier = "Medium" | "Small";
+// 与后端 serde 的 rename_all = "lowercase" 对齐（config.rs Tier / ProviderKind）
+export type Tier = "medium" | "small";
 export type Lang = "en" | "zh" | "ja" | "auto";
-export type ProviderKind = "DeepSeek" | "DeepL" | "Microsoft";
+export type ProviderKind = "deepseek" | "deepl" | "microsoft";
+// DeepSeek 思考强度（与后端 config.rs ReasoningEffort serde 小写对齐）。
+export type ReasoningEffort = "high" | "max";
 
 // ===== Config（与 snaptext_core::config::Config 对齐）=====
 
@@ -45,7 +48,13 @@ export interface Config {
 export interface TranslateConfig {
   provider: ProviderKind;
   target_lang: Lang;
-  deepseek: { base_url: string; model: string; api_key: string | null };
+  deepseek: {
+    base_url: string;
+    model: string;
+    api_key: string | null;
+    reasoning_enabled: boolean;
+    reasoning_effort: ReasoningEffort;
+  };
   deepl: { plan: "Free" | "Pro"; api_key: string | null };
   microsoft: { endpoint: string; region: string; api_key: string | null };
   timeout_llm_secs: number;
@@ -69,14 +78,18 @@ export interface MonitorDto {
   shot_path: string;
 }
 
-export interface SelectResult {
+// 选区分阶段命令的 DTO（三层命令：crop → recognize → translate）。
+export interface CropResult {
   shot_path: string;
+}
+export interface OcrResult {
   ocr_lines: OcrLine[];
-  translations: string[];
   original: string;
+}
+export interface TranslateResult {
+  translations: string[];
   translated: string;
   provider: string;
-  elapsed_ms: number;
 }
 
 export interface HistoryDto {
@@ -102,18 +115,23 @@ export const api = {
   getConfig: () => invoke<Config>("get_config"),
   saveConfig: (cfg: Config) => invoke<boolean>("save_config", { cfg }),
   checkTranslateReady: () => invoke<boolean>("check_translate_ready"),
+  // DeepSeek 模型列表（设置页填 key 后拉取，GET {base_url}/models）。
+  listDeepseekModels: (baseUrl: string, apiKey: string) =>
+    invoke<string[]>("list_deepseek_models", { baseUrl, apiKey }),
 
   // 模型
   modelsReady: (tier: Tier) => invoke<boolean>("models_ready", { tier }),
   downloadModels: (tier: Tier) => invoke<void>("download_models", { tier }),
 
-  // 截图 + 选区
+  // 截图 + 选区（三层命令：框选抬起仅 crop 即开结果窗，OCR/翻译在结果窗内分阶段）
   captureAll: () => invoke<MonitorDto[]>("capture_all"),
   getLastCapture: () => invoke<MonitorDto[]>("get_last_capture"),
   triggerCapture: () => invoke<void>("trigger_capture_cmd"),
-  selectRegion: (monitorId: string, bbox: Bbox) =>
-    invoke<SelectResult>("select_region", { monitorId, bbox }),
-  getLastResult: () => invoke<SelectResult>("get_last_result"),
+  cropRegion: (monitorId: string, bbox: Bbox) =>
+    invoke<CropResult>("crop_region", { monitorId, bbox }),
+  getLastCrop: () => invoke<CropResult>("get_last_crop"),
+  recognizeRegion: () => invoke<OcrResult>("recognize_region"),
+  translateRegion: () => invoke<TranslateResult>("translate_region"),
   saveImageCopy: (sourcePath: string, destPath: string) =>
     invoke<void>("save_image_copy", { sourcePath, destPath }),
   logDiag: (tag: string, message: string) => invoke<void>("log_diag", { tag, message }),
