@@ -207,6 +207,8 @@ pub trait CaptureProvider: Send + Sync {
 
 **关键设计**：热键触发后**立即**对所有显示器各捕获一帧（<50ms），缓存到内存。选区 Overlay 直接把这帧绘制为背景，避免选区过程中屏幕内容变化。
 
+**坐标系**（单屏已精确，多屏未完成）：截图帧为**物理像素**（windows-capture 取自 `dmPelsWidth/Height`），前端窗口为逻辑像素。`MonitorInfo.scale = GetDpiForMonitor/96.0`，前端用 `物理 = 逻辑 × scale` 换算框选 bbox；`MonitorInfo.x/y` 固定 0（多屏 origin 待实现）。`crop_frame`（src-tauri）把 bbox clamp 到图像边界，越界返回 Err 而非 panic。
+
 ### 5.2 OCR
 
 ```rust

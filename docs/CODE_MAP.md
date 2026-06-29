@@ -2,7 +2,7 @@
 
 > 给 AI 用：快速定位"改 X 看哪里"、"动 A 影响哪些 B"、"哪些文件禁止碰"。
 
-最后更新：2026-06-27（架构迁移：egui → Tauri 2 + Vue 3 + Naive UI。删 `crates/snaptext-app`、`wix/`、`build-msi.ps1`；新增 `src-tauri/`（Rust 后端，命令层 + 系统集成）+ `src/`（Vue 前端）。core 100% 复用。译文图上原位覆盖、历史 V002、行级译文逻辑从旧 orchestrator 搬到 `src-tauri/commands/`。**补集成测试**：核心管线抽成纯函数 `run_ocr_translate`，用 mock Provider 覆盖端到端（取代随 crate 删除丢失的 orchestrator full_pipeline）；src-tauri 测试 6→18。**修白屏**：Naive UI 组件未注册导致页面空白，加 `unplugin-vue-components` + `NaiveUiResolver` 按需自动注册）
+最后更新：2026-06-29（**截图性能**：全屏临时图 PNG→BMP，框选前延迟从 ~1.3s 降到 ~0.3s（PNG 单线程编码是瓶颈，BMP 无压缩）。**修结果窗口一闪而过 bug**：选区结果原走 Pinia 跨窗口传递，但 Tauri 多窗口 JS 上下文隔离、Pinia 不共享，结果窗口 `Result.vue` 读到 `store.lastResult === null` 即 `close()` 自杀。改用与截图缓存同款的反竞态模式：`select_region` 写 `state.last_result`，新增 `get_last_result` 命令，`Result.vue onMounted` 主动拉取；删孤立的 `stores/capture.ts`。架构迁移：egui → Tauri 2 + Vue 3 + Naive UI。删 `crates/snaptext-app`、`wix/`、`build-msi.ps1`；新增 `src-tauri/`（Rust 后端，命令层 + 系统集成）+ `src/`（Vue 前端）。core 100% 复用。译文图上原位覆盖、历史 V002、行级译文逻辑从旧 orchestrator 搬到 `src-tauri/commands/`。**补集成测试**：核心管线抽成纯函数 `run_ocr_translate`，用 mock Provider 覆盖端到端（取代随 crate 删除丢失的 orchestrator full_pipeline）；src-tauri 测试 6→18→20。**修白屏**：Naive UI 组件未注册导致页面空白，加 `unplugin-vue-components` + `NaiveUiResolver` 按需自动注册。**bug 修复**（见各模块 ⚠️ 标记）：`dao::row_to_record` 列索引错位致带截图记录 list 崩溃；`HistoryStore` 加 `get_screenshot` 取代全表拉 BLOB；`monitor_to_info` 用真实 DPI scale；`capture_wgc` 会话 stop 收尾；`crop_frame` 越界 clamp）
 
 ## 文件状态图例
 
@@ -96,9 +96,11 @@ pub enum CoreError {
 | 文件 | 职责 | 关键 API | 依赖 |
 |---|---|---|---|
 | `mod.rs` | `CaptureProvider` trait 定义 + 导出默认实现 | `trait CaptureProvider`, `pub use WindowsCaptureProvider` | `types`, `error`, `async-trait` |
-| `windows_capture.rs` | `WindowsCaptureProvider` 实现（WGC 优先 + DXGI fallback） | `struct WindowsCaptureProvider` | `windows-capture`, `image`, `tokio`, `async-trait` |
+| `windows_capture.rs` | `WindowsCaptureProvider` 实现（WGC 优先 + DXGI fallback） | `struct WindowsCaptureProvider` | `windows-capture`, `windows`(DPI 查询), `image`, `tokio`, `async-trait` |
 
 **修改约束**：动 `mod.rs` 的 trait 签名 = 同步动 `windows_capture.rs` + 所有调用方（`orchestrator.rs`）。
+
+**DPI 与坐标**（单屏正确，多屏 origin 未做）：`monitor_to_info` 经 Win32 `GetDpiForMonitor` 算真实 `scale = dpi/96.0`，供前端把框选的逻辑坐标换算成物理坐标（截图帧是物理像素）。`x/y` 固定 0（多屏 origin 需 `GetMonitorInfoW` 的 `rcMonitor`，未实现）。`capture_wgc` 在 `recv_timeout` 成败两路都调 `control.stop()` 回收会话（曾因超时 `?` 提前返回跳过 stop，泄漏 WGC 后台会话）。`crop_frame`（src-tauri）把 bbox clamp 到图像边界，越界返回 Err 而非 panic。
 
 ### src/ocr/ 🟢
 
@@ -141,7 +143,9 @@ pub enum CoreError {
 | `migrations/V001__initial.sql` | 初始迁移脚本 | 资源文件（include_str） | — |
 | `migrations/V002__image_and_lines.sql` | 加 `screenshot_png`/`ocr_lines_json`/`line_translations_json` | 资源文件（include_str） | — |
 
-**约定**：连接池 size 5，读写均 `spawn_blocking`。`insert`/`list`/`search`/`stats`/`delete_before`/`delete_by_id`/`clear_all`/`cleanup` 已实现（DU-06 + DU-15）。清理（retention_days + max_records）由 Orchestrator 启动时调 `cleanup_blocking`。
+**约定**：连接池 size 5，读写均 `spawn_blocking`。`insert`/`list`/`search`/`stats`/`delete_before`/`delete_by_id`/`clear_all`/`cleanup`/`get_screenshot` 已实现（DU-06 + DU-15）。`get_screenshot(id)` 按 id 精确查单列 `screenshot_png`，供历史面板详情取图（取代旧 `list(10000)` 全表拉 BLOB——既丢图又慢）。清理（retention_days + max_records）由 Orchestrator 启动时调 `cleanup_blocking`。
+
+> ⚠️ 列索引陷阱：`dao::row_to_record` 用位置索引读列，`ocr_lines_json`(18)/`line_translations_json`(19) 紧跟 `screenshot_png`(17, BLOB)。曾因索引错位（误读 17/18）导致任何带截图的记录 `list` 时 BLOB→String 类型不符而崩溃——已修，并有 `list_reads_back_v002_fields_when_populated` 回归测试。
 
 **HistoryRecord 字段**（V002 扩展）：基础文本字段 + `bbox` + V002 新增 `screenshot_png: Option<Vec<u8>>`（选区截图 PNG）、`ocr_lines: Option<Vec<OcrLine>>`（行级 OCR，含 bbox）、`line_translations: Option<Vec<String>>`（与 ocr_lines 按索引配对的逐行译文）。三者配合译文图上原位覆盖与历史面板回看。`id: i64`（主键，insert 时 0，list 读回填充）。
 
@@ -181,7 +185,7 @@ Tauri 应用后端。命令层包装 `snaptext-core` 的 Provider，系统集成
 
 ### src/state.rs 🟢
 
-`AppState`（`app.manage` 注入，命令用 `State<'_, AppState>` 取用）。持有 `Arc<dyn CaptureProvider>`、`Arc<dyn OcrProvider>`、`Mutex<Option<Arc<dyn TranslationProvider>>>`、`Arc<dyn HistoryStore>`、`Mutex<Config>`、`reqwest::Client`、`Mutex<Vec<CapturedFrame>>`（截图缓存）。**取代旧 Orchestrator 的 Provider 持有角色**——Tauri 命令直接读 state 调 Provider，无 channel。
+`AppState`（`app.manage` 注入，命令用 `State<'_, AppState>` 取用）。持有 `Arc<dyn CaptureProvider>`、`Arc<dyn OcrProvider>`、`Mutex<Option<Arc<dyn TranslationProvider>>>`、`Arc<dyn HistoryStore>`、`Mutex<Config>`、`reqwest::Client`、`Mutex<Vec<CapturedFrame>>`（截图缓存）、`Mutex<Option<SelectResult>>`（选区结果缓存）。**取代旧 Orchestrator 的 Provider 持有角色**——Tauri 命令直接读 state 调 Provider，无 channel。`captured`/`last_result` 两套缓存都是反竞态模式：先写后端，子窗口 `onMounted` 主动命令拉取（Pinia 不跨窗口共享，emit 事件会因子窗口未加载完而丢失）。
 
 ### src/commands/ 🟢
 
@@ -190,9 +194,9 @@ Tauri 应用后端。命令层包装 `snaptext-core` 的 Provider，系统集成
 | `mod.rs` | 模块导出 | — |
 | `config_cmd.rs` | `get_config` / `save_config`（写盘+重建 Provider+重注册热键）/ `check_translate_ready` | `Config::load/save`、`build_provider` |
 | `models.rs` | `models_ready` / `download_models`（后台线程+专用 runtime，进度经 `download-progress` 事件推送） | `model_manager::is_models_ready`、`downloader::download_models` |
-| `capture.rs` | `capture_all`（截全屏+缓存帧+写临时 PNG+返回 `MonitorDto`）/ `save_image_copy`（复制结果图到目标路径） | `CaptureProvider::capture_all` |
-| `ocr_translate.rs` | `select_region`（选区→crop→OCR→翻译→`align_lines` 配对→写历史→返回 `SelectResult`）；核心管线抽成纯函数 `run_ocr_translate`（不依赖 Tauri，便于 mock 测试） | `OcrProvider::recognize`、`TranslationProvider::translate`、`HistoryStore::insert` |
-| `history.rs` | `history_list` / `history_search` / `history_get_screenshot`（base64 data URL）/ `history_delete` / `history_clear` / `history_stats`；`to_dto` 纯函数剥离 `screenshot_png` 二进制 | `HistoryStore::list/search/delete_by_id/clear_all/stats` |
+| `capture.rs` | `capture_all`（截全屏+缓存帧+写临时 BMP+返回 `MonitorDto`）/ `get_last_capture`（重建 DTO）/ `save_image_copy`（复制结果图到目标路径） | `CaptureProvider::capture_all` |
+| `ocr_translate.rs` | `select_region`（选区→crop→OCR→翻译→`align_lines` 配对→写历史→缓存结果→返回 `SelectResult`）/ `get_last_result`（结果窗口 `onMounted` 拉取缓存）；核心管线抽成纯函数 `run_ocr_translate`（不依赖 Tauri，便于 mock 测试） | `OcrProvider::recognize`、`TranslationProvider::translate`、`HistoryStore::insert` |
+| `history.rs` | `history_list` / `history_search` / `history_get_screenshot`（按 id 查单列截图→base64 data URL）/ `history_delete` / `history_clear` / `history_stats`；`to_dto` 纯函数剥离 `screenshot_png` 二进制 | `HistoryStore::list/search/get_screenshot/delete_by_id/clear_all/stats` |
 
 **关键约束**（迁移自探索）：`CapturedFrame`/`DynamicImage` 不可序列化，截图与裁剪在 Rust 内完成，前端只收元数据 + 图片路径（前端 `convertFileSrc` 转 webview URL）。`HistoryRecord.screenshot_png` 二进制走单独 `history_get_screenshot`（base64）。
 
@@ -229,12 +233,12 @@ Tauri 应用后端。命令层包装 `snaptext-core` 的 Provider，系统集成
 | `views/Capture.vue` | 选区窗口：全屏 Canvas 显示截图 + 鼠标拖拽框选 + 抬起调 `select_region` + 创建结果窗口 |
 | `views/Result.vue` | 结果窗口：选区图 + Canvas 按 OCR 行 bbox 擦白画译文 + 工具栏（原文/译文切换、复制、保存、关闭）|
 | `stores/config.ts` | 配置 Pinia（load/save） |
-| `stores/capture.ts` | 选区结果 Pinia（Capture 写、Result 读）|
+> 注：原 `stores/capture.ts` 已删除——选区结果跨窗口传递改走后端 `last_result` 缓存 + `get_last_result` 命令拉取（Pinia 不跨窗口共享，见 `state.rs`）。
 
 **截图翻译交互**（桌面框选+弹窗，按用户决策）：
-1. 热键 → Rust `trigger_capture` 创建选区窗口
-2. Capture.vue `capture_all` → 全屏图 → 框选 → `select_region(monitor_id, bbox)`
-3. select_region 返回 `SelectResult` → 创建结果窗口 → Result.vue 译文叠加
+1. 热键 → Rust `trigger_capture_cmd` 创建选区窗口
+2. Capture.vue `get_last_capture` → 全屏图 → 框选 → `select_region(monitor_id, bbox)`
+3. select_region 返回并缓存 `SelectResult` → 创建结果窗口 → Result.vue `onMounted` 调 `get_last_result` 拉取 → 译文叠加
 
 ---
 
