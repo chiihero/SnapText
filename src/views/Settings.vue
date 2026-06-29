@@ -5,6 +5,7 @@ import { onMounted, reactive, ref, watch } from "vue";
 import {
   NLayout,
   NLayoutSider,
+  NLayoutContent,
   NMenu,
   NForm,
   NFormItem,

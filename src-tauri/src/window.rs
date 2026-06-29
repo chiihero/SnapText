@@ -34,10 +34,14 @@ pub fn open_capture_window(app: &AppHandle) -> tauri::Result<()> {
 pub async fn trigger_capture_cmd(app: AppHandle) -> Result<(), String> {
     use tauri::Manager;
     let state = app.state::<crate::state::AppState>();
+    let start = std::time::Instant::now();
     // 1. 先截图（无遮挡，截到真实桌面）。
     crate::commands::capture::do_capture_all(&app, state.inner()).await?;
-    // 2. 再开窗口（Capture.vue 挂载后主动拉取已缓存截图）。
+    tracing::info!(capture_total_ms = start.elapsed().as_millis(), "trigger_capture 截图阶段完成");
+    // 2. 再开窗（Capture.vue 挂载后主动拉取已缓存截图）。
+    let win_start = std::time::Instant::now();
     open_capture_window(&app).map_err(|e| format!("打开选区窗口失败：{e}"))?;
+    tracing::info!(open_window_ms = win_start.elapsed().as_millis(), total_ms = start.elapsed().as_millis(), "trigger_capture 选区窗口已创建");
     Ok(())
 }
 

@@ -60,7 +60,9 @@ pub async fn get_last_capture(
     for frame in captured.iter() {
         let m = &frame.monitor;
         let safe_id = m.id.as_str().replace(['\\', '/', ':'], "_");
-        let shot_path = tmp_dir.join(format!("shot_{safe_id}.png"));
+        // 用 BMP（无压缩）而非 PNG：全屏 RGBA 编码 PNG 单线程耗时 ~1s，
+        // BMP 近乎内存拷贝（<50ms）。此文件仅喂选区窗口 webview 显示，不持久化。
+        let shot_path = tmp_dir.join(format!("shot_{safe_id}.bmp"));
         dtos.push(MonitorDto {
             id: m.id.as_str().to_string(),
             name: m.name.clone(),
@@ -78,12 +80,13 @@ pub async fn get_last_capture(
 
 /// 截图核心逻辑（命令 + trigger_capture 复用）。
 ///
-/// 截所有显示器 → 缓存帧进 state.captured → 写临时 PNG → 返回 DTO。
+/// 截所有显示器 → 缓存帧进 state.captured → 写临时 BMP → 返回 DTO。
 /// 抽出来让 trigger_capture 能"先截图再开窗"，避免选区窗口盖住桌面导致截到白屏。
 pub async fn do_capture_all(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<Vec<MonitorDto>, String> {
+    let start = std::time::Instant::now();
     tracing::info!("capture_all 开始执行");
     let frames = state
         .capture
@@ -93,7 +96,8 @@ pub async fn do_capture_all(
             tracing::error!(error = %e, "capture_all 截图失败");
             format!("截图失败：{e}")
         })?;
-    tracing::info!(count = frames.len(), "capture_all 截图成功");
+    tracing::info!(count = frames.len(), capture_ms = start.elapsed().as_millis(), "capture_all 抓帧完成");
+    let encode_start = std::time::Instant::now();
 
     // 写临时 PNG：复用 appdata 下的 tmp 目录。
     let tmp_dir = app
@@ -108,16 +112,18 @@ pub async fn do_capture_all(
         let m = &frame.monitor;
         // 文件名用 monitor id 的安全形式。
         let safe_id = m.id.as_str().replace(['\\', '/', ':'], "_");
-        let png_path = tmp_dir.join(format!("shot_{safe_id}.png"));
+        // 用 BMP（无压缩）而非 PNG：全屏 PNG 编码是框选前延迟主因（~1s），
+        // BMP 近乎内存拷贝。此临时文件仅喂选区窗口 webview 显示，不持久化。
+        let shot_path = tmp_dir.join(format!("shot_{safe_id}.bmp"));
         let mut buf = Cursor::new(Vec::new());
         frame
             .image
-            .write_to(&mut buf, image::ImageFormat::Png)
+            .write_to(&mut buf, image::ImageFormat::Bmp)
             .map_err(|e| format!("编码截图失败：{e}"))?;
-        std::fs::write(&png_path, buf.into_inner())
+        std::fs::write(&shot_path, buf.into_inner())
             .map_err(|e| format!("写截图文件失败：{e}"))?;
 
-        let shot_path = png_path.to_string_lossy().to_string();
+        let shot_path = shot_path.to_string_lossy().to_string();
         dtos.push(MonitorDto {
             id: m.id.as_str().to_string(),
             name: m.name.clone(),
@@ -131,6 +137,7 @@ pub async fn do_capture_all(
         });
     }
 
+    tracing::info!(encode_ms = encode_start.elapsed().as_millis(), total_ms = start.elapsed().as_millis(), "capture_all BMP 编码+写盘完成");
     *state.captured.lock().await = frames;
     Ok(dtos)
 }
