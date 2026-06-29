@@ -14,7 +14,7 @@ const opening = ref(false);
 
 onMounted(async () => {
   await store.load();
-  modelsReady.value = await api.modelsReady(store.config?.ocr.tier ?? "Medium").catch(() => false);
+  modelsReady.value = await api.modelsReady(store.config?.ocr.tier ?? "medium").catch(() => false);
 });
 
 async function openSettings() {

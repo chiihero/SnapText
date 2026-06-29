@@ -165,7 +165,7 @@ mod tests {
             original_text: "Hello".into(),
             translated_text: "你好".into(),
             provider: ProviderId::new_static("deepseek"),
-            model: Some("deepseek-chat".into()),
+            model: Some("deepseek-v4-flash".into()),
             prompt_tokens: Some(10),
             completion_tokens: Some(5),
             total_cost_cny_milli: Some(1),
