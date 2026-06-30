@@ -114,8 +114,8 @@ impl Default for GeneralConfig {
         Self {
             log_level: "info".to_string(),
             log_file: None,
-            auto_ocr: true,
-            auto_translate: true,
+            auto_ocr: false,
+            auto_translate: false,
         }
     }
 }
