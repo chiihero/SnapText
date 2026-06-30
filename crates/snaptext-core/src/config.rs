@@ -95,7 +95,7 @@ pub fn config_path() -> Result<PathBuf, ConfigError> {
 
 // ===== 各配置段 =====
 
-/// 通用段：日志等。
+/// 通用段：日志 + 截图后默认行为开关等。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GeneralConfig {
@@ -103,6 +103,10 @@ pub struct GeneralConfig {
     pub log_level: String,
     /// 自定义日志文件路径；`None` 用默认 `%APPDATA%\SnapText\logs\snaptext.log`。
     pub log_file: Option<String>,
+    /// 框选抬起后是否自动跑 OCR。关闭则在结果窗手动点"原文"触发。
+    pub auto_ocr: bool,
+    /// OCR 完成后是否自动跑翻译。关闭则在结果窗手动点"译文"触发。
+    pub auto_translate: bool,
 }
 
 impl Default for GeneralConfig {
@@ -110,6 +114,8 @@ impl Default for GeneralConfig {
         Self {
             log_level: "info".to_string(),
             log_file: None,
+            auto_ocr: true,
+            auto_translate: true,
         }
     }
 }

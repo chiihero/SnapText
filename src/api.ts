@@ -30,7 +30,14 @@ export type ReasoningEffort = "high" | "max";
 // ===== Config（与 snaptext_core::config::Config 对齐）=====
 
 export interface Config {
-  general: { log_level: string; log_file: string | null };
+  general: {
+    log_level: string;
+    log_file: string | null;
+    /** 框选后是否自动 OCR；关闭则结果窗手动点"原文"触发。 */
+    auto_ocr: boolean;
+    /** OCR 完成后是否自动翻译；关闭则结果窗手动点"译文"触发。 */
+    auto_translate: boolean;
+  };
   hotkey: { trigger: string };
   capture: Record<string, never>;
   ocr: { tier: Tier; postprocess: boolean };

@@ -124,10 +124,19 @@ async function save() {
         <template v-if="activeTab === 'general'">
           <n-card title="通用">
             <n-form label-placement="left" :label-width="160">
+              <n-form-item label="框选后自动识别">
+                <n-switch v-model:value="draft.general.auto_ocr" />
+              </n-form-item>
+              <n-form-item label="识别后自动翻译">
+                <n-switch v-model:value="draft.general.auto_translate" />
+              </n-form-item>
               <n-form-item label="关闭时最小化到托盘">
                 <n-switch v-model:value="draft.ui.minimize_to_tray_on_close" />
               </n-form-item>
             </n-form>
+            <p style="color: var(--st-text-weak); font-size: 12px; margin: 0">
+              关闭自动识别/翻译后，可在结果窗手动点按钮触发。
+            </p>
           </n-card>
         </template>
 
