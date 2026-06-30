@@ -71,7 +71,6 @@ export interface TranslateConfig {
   prompt_template: string;
   /** 是否使用自定义 prompt。false=系统默认（渲染走后端常量）；true=用 prompt_template 字段。 */
   prompt_use_custom: boolean;
-  fallback_order: ProviderKind[];
 }
 
 // ===== 命令 DTO（与 src-tauri 的命令返回类型对齐）=====

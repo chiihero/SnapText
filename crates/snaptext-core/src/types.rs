@@ -234,16 +234,6 @@ impl From<String> for ProviderId {
     }
 }
 
-/// 应用状态机当前状态（见 DESIGN §3.3）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AppState {
-    Idle,
-    Selecting,
-    Recognizing,
-    Translating,
-    Showing,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

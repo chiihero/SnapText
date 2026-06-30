@@ -297,8 +297,6 @@ pub struct TranslateConfig {
     /// 是否使用自定义 prompt 模板。false（默认）= 系统默认（只读展示，渲染走常量）；
     /// true = 用 `prompt_template` 字段渲染。
     pub prompt_use_custom: bool,
-    /// 故障转移顺序（P2 DU-17）。
-    pub fallback_order: Vec<ProviderKind>,
 }
 
 impl Default for TranslateConfig {
@@ -315,7 +313,6 @@ impl Default for TranslateConfig {
             postprocess: true,
             prompt_template: crate::translate::prompt::DEFAULT_PROMPT_TEMPLATE.to_string(),
             prompt_use_custom: false,
-            fallback_order: vec![ProviderKind::DeepSeek, ProviderKind::DeepL],
         }
     }
 }

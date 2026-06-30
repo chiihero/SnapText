@@ -3,7 +3,6 @@
 //! MVP 仅 DeepSeek（OpenAI 兼容）+ DeepL。microsoft.rs / baidu.rs 推迟 P2 DU-18。
 
 pub mod deepl;
-pub mod fallback;
 pub mod microsoft;
 pub mod openai_compat;
 pub mod postprocess;
