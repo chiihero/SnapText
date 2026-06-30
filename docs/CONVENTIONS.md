@@ -17,10 +17,10 @@
 
 ## 2. 架构边界（不可逾越）
 
-- ❌ `snaptext-core` 不得依赖 `snaptext-app`
-- ❌ `snaptext-core` 不得引入 UI 依赖（`eframe` / `egui` / `winit`）
-- ❌ UI 层不得直接调 `reqwest` / `ort`，必须通过 trait
-- ❌ `main.rs` 不得写业务逻辑，仅初始化
+- ❌ `snaptext-core` 不得依赖 `src-tauri`
+- ❌ `snaptext-core` 不得引入 UI/系统集成依赖（`tauri` / 前端框架 / 窗口 API）
+- ❌ 前端（`src/`）不得直接调 `reqwest` / `ort`，必须经 Tauri 命令（`invoke`）
+- ❌ `main.rs` 不得写业务逻辑，仅初始化 + 命令注册
 - ❌ 跨 DU 修改文件（你做 DU-05，不要改 DU-08 涉及的文件）
 
 ## 3. Provider 实现约定
@@ -33,45 +33,32 @@
 - HTTP 调用必须有超时（LLM 30s / 专用 MT 10s）
 - 共享 `reqwest::Client`（不每次 new）
 
-## 4. ort::Session 强制包装
+## 4. ONNX 推理跨线程共享
 
-PP-OCRv6 推理用 `ort::Session`。**默认不 Send**，必须：
+PP-OCRv6 推理经 `oar-ocr` 封装（`OAROCR` 内部 `Arc<Session>`，已 `Send + Sync`），用 `Arc<OAROCR>` 跨线程共享，**无需 `Mutex`**：
 
 ```rust
 pub struct PaddleOcrProvider {
-    det_session: Arc<Mutex<Session>>,
-    rec_session: Arc<Mutex<Session>>,
+    engine: Arc<OAROCR>,
 }
 ```
 
 详见 `AI_GUIDE.md §3.1`。
 
-## 5. Windows 主线程约束
+## 5. Windows 主线程约束（Tauri 接管）
 
-以下 API 必须在主线程调用（winit event loop 所在线程）：
+以下系统集成由 Tauri 2 + 插件在主线程自动处理，**不要手动构造** EventLoop / runtime：
 
-| API | 原因 |
+| 职责 | Tauri 接管方式 |
 |---|---|
-| `winit::EventLoop` | Win32 消息循环 |
-| `global-hotkey` 注册 | 同上 |
-| `tray-icon` 创建 | 同上 |
-| `arboard::Clipboard::set_text` | 剪贴板要求窗口线程 |
+| Win32 消息循环 | `tauri::Builder::run`（内部事件循环） |
+| 全局热键 | `tauri-plugin-global-shortcut`（注册失败降级，见 DESIGN §5.5） |
+| 系统托盘 | `tauri::tray::TrayIconBuilder` |
+| 剪贴板 | `tauri-plugin-clipboard-manager` |
 
-**模式**：tokio worker 通过 channel 把命令发给主线程；主线程在 egui frame callback 里 poll channel。
+## 6. tokio runtime（Tauri 内置）
 
-## 6. tokio runtime 构造
-
-`main.rs` 必须**手动**构造 runtime（不用 `#[tokio::main]`）：
-
-```rust
-fn main() -> Result<()> {
-    let runtime = Arc::new(tokio::runtime::Runtime::new()?);
-    // runtime.handle().spawn(...) 提交任务
-    // runtime 在 main 持有，eframe run 阻塞主线程
-}
-```
-
-理由：eframe 的事件循环是同步阻塞的，`#[tokio::main]` 的 main future 不能阻塞主线程。
+`main.rs` 用 `tauri::Builder::default()`，runtime 由 Tauri 内置提供。`#[tauri::command] async fn` 自动跑在 Tauri 的 tokio runtime 上。**不要**手动构造 `tokio::runtime::Runtime`（例外：模型下载专用线程 `download_models` 因闭包非 Send，隔离用独立 runtime `block_on`）。
 
 ## 7. 单文件长度
 

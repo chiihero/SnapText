@@ -51,60 +51,38 @@
 
 ## 3. 项目特定陷阱（必看）
 
-### 3.1 ort::Session 不是 Send
+### 3.1 ONNX 推理跨线程共享（oar-ocr）
 
-`ort::Session` **默认不是 Send + Sync**。多线程共享必须用：
+oar-ocr 0.7+ 的 `OAROCR` 已实现 `Send + Sync`（内部 `Arc<Session>`），用 `Arc<OAROCR>` 跨线程共享，**无需 `Mutex`**（ort 直接用法曾需 `Arc<Mutex<Session>>`，oar-ocr 封装已解决）：
 
 ```rust
 pub struct PaddleOcrProvider {
-    det_session: Arc<Mutex<Session>>,
-    rec_session: Arc<Mutex<Session>>,
+    engine: Arc<OAROCR>,  // 构造时 Arc::new，命令层 Arc clone
 }
 ```
 
-推理时 `let session = self.det_session.lock().await; session::run(...)`。
+推理在 `spawn_blocking` 中执行（CPU 密集，不阻塞 tokio reactor）。
 
-### 3.2 winit / global-hotkey / tray-icon / arboard 都要求主线程
+### 3.2 Tauri 命令直接读 State，无 channel
 
-Windows 上这些 API 必须在主线程（拥有消息循环的线程）调用。
-tokio worker 通过 channel 发命令到主线程，主线程在 eframe frame callback 里处理。
-
-错误模式：`tokio::spawn(async { EventLoop::new() })` → panic。
+egui 期曾有 mpsc channel（UI ↔ Orchestrator）。迁移 Tauri 后已删——`#[tauri::command]` 函数用 `State<'_, AppState>` 取共享状态，直接调 Provider。**不要**重新引入 channel 或手动 `tokio::runtime::Runtime` 构造（Tauri 内置 runtime，`#[tauri::command] async fn` 自动跑在其上）。
 
 ### 3.3 ONNX 模型加载是慢操作（1-3 秒）
 
-启动时加载一次，存 `Arc<Mutex<Session>>` 复用。
-**绝不能**每次 OCR 调用都重新加载。
+`PaddleOcrProvider::new` 在 `AppState::build`（main setup）加载一次，存 `Arc<OAROCR>` 复用。**绝不能**每次 OCR 调用都重新加载。
 
-### 3.4 egui Viewport API 创建 overlay
+### 3.4 跨窗口数据：后端缓存 + 前端拉取（反竞态）
 
-winit 0.30+ + eframe 0.29+ 用 Viewport 创建多窗口（每屏一个 overlay）：
+Tauri 多窗口 JS 上下文隔离，**Pinia 不跨窗口共享**，Tauri `emit` 事件可能因子窗口未加载完而丢失。故选区→结果窗的数据传递走反竞态模式：
 
-```rust
-ctx.show_viewport_deferred(
-    ViewportId::from_hash_of(monitor_id),
-    ViewportBuilder {
-        fullscreen: Some(true),
-        decorations: Some(false),
-        always_on_top: Some(true),
-        ..Default::default()
-    },
-    |ctx, ui| { /* 渲染 */ },
-);
-```
+- 后端命令写缓存（`state.captured`/`last_crop`/`last_ocr`）
+- 子窗口 `onMounted` 主动调命令拉取（`get_last_capture`/`get_last_crop`/...）
 
-不要在 event loop 外创建 window。
+**不要**用 Pinia 跨窗口传数据，也**不要**依赖 `emit` 给刚创建的子窗口（会丢）。选区窗常驻复用后，`emit("capture-ready")` 可靠（窗口早已加载完），但仍保留拉取命令作兜底。
 
-### 3.5 tokio runtime 跨 winit callback
+### 3.5 shot:// 自定义协议取截图（不写临时文件）
 
-egui 回调是同步的。UI 提交 async 任务：
-
-```rust
-let handle = self.runtime.handle().clone();
-handle.spawn(async move { /* ... */ });
-```
-
-启动时构造一个全局 `tokio::runtime::Runtime`，`Arc` 共享，UI 用 `rt.handle().spawn(...)`。
+全屏截图经 `shot://` 协议（`main.rs::register_asynchronous_uri_scheme_protocol`）从 `state.captured` 内存直接编码 BMP 返回，前端 `<img src="http://shot.localhost/<id>">`。**不写临时文件**（旧版写临时 BMP，省 ~150ms IO）。陷阱：shot:// URL 按 monitor id 固定，WebView2 HTTP 缓存会命中旧帧——前端必须加 `?t=Date.now()` 时间戳 + 后端响应加 `Cache-Control: no-store`（双保险）。
 
 ### 3.6 reqwest::Client 必须共享
 
@@ -115,12 +93,12 @@ async fn translate(text: &str) {
 }
 
 // 正确 ✅
-pub struct DeepSeekProvider {
+pub struct OpenAiCompatProvider {
     client: reqwest::Client,  // 构造时注入
 }
 ```
 
-Provider 在 Orchestrator 启动时构造一次。
+`AppState.client` 在 main setup 构造一次，`build_provider` 注入各 Provider。
 
 ### 3.7 Windows 路径
 
@@ -146,13 +124,6 @@ DU-04 开始时，**第一步**：在 tests/ 写独立脚本验证 `oar-ocr`：
 
 `deepseek-v4-flash` 模型名未在 DeepSeek 官方确认。
 **DU-05 实施时如 API 报 `model not found`**：立即切到 `deepseek-chat`（V3 通用，官方确认存在），在 PR 描述记录变更，并改 `DESIGN.md §4.3`。
-
-### 3.10 click-through 切换
-
-选区阶段：`window.set_cursor_hittest(true)`（接收鼠标）
-显示卡片后：`window.set_cursor_hittest(false)`（穿透到下层应用）
-
-**关闭机制**：穿透后用户点卡片外无法触发本窗口事件。用热键再按 / Esc / 定时器检测活动窗口变化。
 
 ---
 

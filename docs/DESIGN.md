@@ -119,27 +119,26 @@
 | `spawn_blocking` | ONNX 推理（CPU 密集） | 不阻塞 reactor |
 | 模型下载专用线程 | `download_models` 独立线程 + 独立 runtime block_on | core 闭包非 Send，故隔离 |
 
-**跨线程通信**：前端 ↔ 后端走 Tauri IPC（`invoke` 请求-响应、`emit`/`listen` 事件，如下载进度）。后端内部无 mpsc channel（取代旧 Orchestrator），命令直接读 `State<AppState>` 调 Provider。
+**跨线程通信**：前端 ↔ 后端走 Tauri IPC（`invoke` 请求-响应、`emit`/`listen` 事件，如下载进度）。后端内部无 mpsc channel（取代旧 egui Orchestrator），命令直接读 `State<AppState>` 调 Provider。sqlite 访问经 `Arc<r2d2::Pool>`（`spawn_blocking` 内取连接）。
 
-**跨线程通信**：
-- UI → Orchestrator：`tokio::sync::mpsc`
-- Orchestrator → UI：`std::sync::mpsc` 或 `crossbeam-channel`
-- sqlite 访问：`Arc<r2d2::Pool>`
+### 3.3 核心交互流程
 
-### 3.3 核心状态机
+无集中状态机（egui 期曾用 `AppState` enum，迁移 Tauri 后已删）。窗口各自管理状态，跨窗口靠"后端缓存 + 前端主动拉取"反竞态模式（见 §5.4/§5.5）：
 
 ```
-        hotkey pressed                       mouse up
-  ┌─────────────────────┐  esc   ┌──────────────────────┐
-  │                     │        │                      │
-  ▼                     │        ▼                      │
-Idle ─────hotkey─────▶ Selecting ─────mouse_up─────▶ Recognizing
-  ▲                     │                            │     │
-  │                     │ esc                        │     │ ocr done
-  │                     ▼                            │     ▼
-  │                  Idle ◀──────────click close───── Showing
-  │                                                   │
-  └───────────────────esc / hotkey again──────────────┘
+热键 ──▶ trigger_capture_cmd（截图 + emit capture-ready）
+  │
+  ▼
+Capture.vue（选区窗，常驻隐藏）收到事件 → draw 截图 → show
+  │  鼠标抬起
+  ▼
+crop_region（裁剪 + 缓存 last_crop）→ 开 Result 窗 → 隐藏选区窗
+  │
+  ▼
+Result.vue onMounted → recognize_region（OCR + 缓存 last_ocr）
+  │
+  ▼
+translate_region（翻译 + 配对 + 落库）→ 原位显示译文
 ```
 
 ---
@@ -326,40 +325,15 @@ You are a precise translator. Translate the text below from {{source}} to {{targ
 
 **透明度处理**：选区阶段 `set_cursor_hittest(true)`（接收鼠标），显示卡片后 `set_cursor_hittest(false)`（穿透到下层）。
 
-### 5.5 Orchestrator
+### 5.5 命令层（取代旧 Orchestrator）
 
-```rust
-pub enum Command {
-    TriggerCapture,
-    RegionSelected(MonitorId, Bbox),
-    Cancel,
-    RetryTranslate(ProviderId),
-    CopyToClipboard(String),
-    UpdateTranslateConfig(TranslateConfig), // 设置保存后即时重建翻译 Provider
-    UpdateTargetLang(Lang),                 // 即时切换翻译目标语言
-    ListHistory(u32, Option<String>),       // 拉取历史（可选关键词搜索）
-    DeleteHistory(i64),                     // 按主键删除单条
-    ClearHistory,                           // 清空全部
-    Shutdown,
-}
+egui 期曾有集中 `Orchestrator`（`Command`/`Event` enum + mpsc channel）。迁移 Tauri 后已删——Tauri 命令直接读 `State<AppState>` 调 Provider，无 channel。命令清单见 `CODE_MAP.md` src-tauri/commands 表（capture / ocr_translate / config_cmd / models / history 五组）。
 
-pub enum Event {
-    Captured(Vec<CapturedFrame>),
-    OcrProgress(OcrProgress),
-    OcrDone(Vec<OcrLine>), // 带 bbox，供译文图上原位覆盖定位
-    TranslateDone(TranslateResponse),
-    HistoryListed(Vec<HistoryRecord>), // 响应 ListHistory，回填给历史面板
-    Error(CoreError),
-    StateChanged(AppState),
-}
-```
-
-**翻译降级与即时生效**：`Orchestrator.translate` 为 `Option<Arc<dyn TranslationProvider>>`——启动时缺 API Key 则为 `None`（翻译时回 `Error` 提示去设置，不阻塞截图/OCR/设置面板）。设置面板/引导页保存后发 `UpdateTranslateConfig`，Orchestrator 调 `build_provider` 即时重建（无需重启）；`UpdateTargetLang` 即时切目标语言。
+**翻译降级与即时生效**：`AppState.translate` 为 `Mutex<Option<Arc<dyn TranslationProvider>>>`——启动时缺 API Key 则为 `None`（翻译时回错误提示去设置，不阻塞截图/OCR/设置面板）。设置页保存后 `save_config` 命令调 `build_provider` 即时重建并写回该 Mutex（无需重启）。
 
 **热键注册降级（同款哲学）**：全局热键注册失败（典型：上一次进程残留未释放热键、或被其他软件占用）不阻断启动——`main.rs::setup` 注册失败时写入 `AppState.hotkey_error` 并继续，前端经 `get_hotkey_status` 拉取后在 Home 弹一次性引导 + Settings 快捷键卡片标红，用户改键保存后 `save_config` 重注册成功即清空状态。与翻译降级同款"缺资源不崩、降级运行 + UI 提示引导修复"模式，也沿用 `captured`/`last_crop`/`last_ocr` 的"后端缓存状态 + 前端主动拉取"反竞态（不引入 Tauri 事件，因子窗口 Pinia 不共享、emit 可能丢失）。
 
-**译文图上原位覆盖 + 行级配对**：OCR 行带 bbox 经 `Event::OcrDone(Vec<OcrLine>)` 一路传到 UI。整段翻译后，译文按 `\n` 切分与 OCR 行按 index 配对（`align_lines`：译文行多于原文并入末行、少于原文补空）。UI 层 `result_overlay` 全屏置顶，以选区裁剪图为背景，在每个 OCR 行 bbox 位置（换算：`选区屏内偏移 + bbox.xy/scale`）擦白后绘制该行译文——即微信截图翻译式原位覆盖。同一份数据（截图 PNG + ocr_lines + line_translations）写历史库供回看。
-```
+**译文图上原位覆盖 + 行级配对**：OCR 行带 bbox 经 `recognize_region` 命令返回前端。整段翻译后，译文按 `\n` 切分与 OCR 行按 index 配对（`align_lines`：译文行多于原文并入末行、少于原文补空）。Result.vue 以选区裁剪图为背景，在每个 OCR 行 bbox 位置擦白后绘制该行译文——即微信截图翻译式原位覆盖。同一份数据（截图 PNG + ocr_lines + line_translations）写历史库供回看。
 
 ### 5.6 历史记录（History）
 
@@ -402,58 +376,60 @@ CREATE INDEX idx_history_created ON translation_history(created_at DESC);
 URL：`https://www.modelscope.cn/models/greatv/oar-ocr/resolve/master/pp-ocrv6_{tier}_{det,rec}.onnx` + `ppocrv6_dict.txt`（v6 模型仅 ModelScope 有；oar-ocr GitHub Releases 仅 v3-v5）。
 本地目录：可执行文件同级的 `models\ppocr\v6\{tier}\`（**便携模式**，模型跟程序走；`v6` 段隔离历史版本）。开发运行时位于 `target\{debug,release}\models\`，安装后位于安装目录。⚠️ 安装目录须可写——勿装到 `Program Files`，否则首启下载会因普通用户无写权限而失败。
 
-### 5.8 UI 层（美化重构）
+### 5.8 UI 层（Vue 3 + Naive UI）
 
-**浅色主题**（`ui/theme.rs`）：固定浅色（不做主题切换）。配色常量 + `apply(ctx)` 设 egui `Visuals`/`Style` + `card_frame(style)` 统一分组容器；`main.rs` creation context 调用，所有 egui 控件自动应用。
+多窗口共用一套路由表，靠 hash 路由（`#/home`/`#/settings`/`#/history`/`#/capture`/`#/result`）区分窗口内容。浅色主题（固定，不做切换），全局 CSS 变量在 `src/styles/global.css`，Naive UI 组件经 `unplugin-vue-components` + `NaiveUiResolver` 按需自动注册。
 
-**译文卡片独立 viewport**（`ui/card.rs`）：always-on-top 无边框 OS 窗口，定位到选区右下角（近屏边翻向），固定显示（`ViewportCommand::OuterPosition(base_pos)` 每帧维持）。每次翻译用递增 `ViewportId` 重新定位；状态跨帧 `Arc<Mutex<CardState>>`。
+**选区窗口**（`Capture.vue`）：Tauri 全屏无边框置顶透明窗口，Canvas 渲染截图 + 鼠标拖拽框选。窗口在 main setup 预创建并隐藏（WebView2/Vue 常驻预热），热键时直接 show 省 ~400ms 冷启动。窗口以 hidden 创建，首次 `draw()` 画上截图 + 双层 `requestAnimationFrame` 等合成完才 show，消除创建→绘制间的白闪。截图经 `shot://` 自定义协议从内存直接取 BMP（不写临时文件）。
 
-**设置面板独立 viewport + 左侧导航**（`ui/settings.rs`）：OS 原生标题栏（拖动/缩放交给 Windows）+ `SidePanel::left`（8 分类）+ `CentralPanel` 分组卡片。草稿机制：编辑 `Arc<Mutex<SettingsState>>` 副本，保存时主程序写回 config + 下发 Orchestrator；API Key 密码框。
+**结果窗口**（`Result.vue`）：Tauri 普通窗口，Canvas 以选区裁剪图为背景，按 OCR 行 bbox 擦白后绘制译文（原位覆盖）。两阶段渲染：原图 → "正在识别" → 原位显示原文 → "正在翻译" → 原位替换译文。工具栏：原文/译文切换、复制、保存、关闭。三层命令（`crop_region`/`recognize_region`/`translate_region`）在结果窗 `onMounted` 内分阶段触发，抬起几十 ms 即弹窗显示原图。
 
-**关键决策**：卡片/设置用 deferred viewport（独立 OS 窗口）而非 `egui::Window`（受主窗口裁剪）；可变状态用 `Arc<Mutex>` 共享进 deferred 闭包（闭包要 `Send + 'static`，不能直接 `&mut Config`）；手动拖动 viewport 会因坐标正反馈闪烁，故设置用 OS 原生标题栏（关闭检测 `ViewportEvent::Close`）、卡片固定不拖。历史面板 + 关窗最小化逻辑推迟到阶段 4。
+**设置面板**（`Settings.vue`）：普通窗口，左侧导航（8 分类）+ 右侧 `n-form` 分组卡片。草稿机制：编辑本地 draft 副本，保存时调 `save_config` 命令写盘 + 重建 Provider + 重注册热键；API Key 用 `n-input` 密码框。
+
+**主窗口**（`Home.vue`）：状态卡（模型/翻译就绪态）+ 截图/设置/历史入口。热键注册失败时弹一次性 `message.warning` 引导。
+
+**关键决策**：选区/结果用独立 Tauri 窗口（非主窗口内组件），因全屏置顶选区需独立 OS 窗口。跨窗口数据不靠 Pinia（Tauri 多窗口 JS 上下文隔离、Pinia 不共享），改走"后端缓存状态（`state.captured`/`last_crop`/`last_ocr`）+ 子窗口 `onMounted` 主动命令拉取"反竞态模式。历史面板 + 关窗最小化逻辑（`minimize_to_tray_on_close`）已实现。
 
 ---
 
 ## 6. 数据流（一次完整调用）
 
+三层命令分阶段反馈，框选抬起几十 ms 即弹结果窗显示原图，OCR/翻译在结果窗内异步进行（详见 §5.4）：
+
 ```
-[User] Ctrl+Alt+Q
+[User] 热键（默认 Ctrl+Alt+Q）
    │
    ▼
-[Rust main] global-shortcut 回调 → window::trigger_capture
-   │                                       打开选区窗口（label=capture）
+[Rust] trigger_capture_cmd：do_capture_all（截图 + 缓存帧进 state.captured）→ emit("capture-ready")
+   │
    ▼
-[Vue Capture.vue] onMounted → invoke('capture_all')
-   │                                       Rust: capture_all → 缓存帧 + 写临时 PNG + 返回 MonitorDto[]
+[Vue Capture.vue]（选区窗，常驻隐藏）收到 capture-ready → img.src = shot:// URI（从内存取 BMP）
+   │               → draw() 画截图 + 双层 rAF → show()
    ▼
 [Vue] 全屏 Canvas 显示截图 → 用户拖拽框选 → mouse_up
-   │                                       bbox（虚拟桌面坐标）= 屏内坐标*scale + monitor 原点
+   │   bbox（物理坐标）= 屏内坐标 × scale + monitor 原点
    ▼
-[Vue] invoke('select_region', { monitor_id, bbox })
+[Vue] invoke('crop_region', { monitor_id, bbox })
+   │
+   ▼  （仅裁剪 + 缓存 state.last_crop，几十 ms）
+   │
+[Vue] 创建结果窗口（label=result）→ 隐藏选区窗（常驻复用，不 close）
    │
    ▼
-[Rust select_region] crop(缓存帧, bbox) ─▶ ocr.recognize ─▶ Vec<OcrLine>
-   │                                              （spawn_blocking ONNX 推理）
-   ▼
-   translate.provider.translate（缺 Key → 报错提示去设置）
+[Vue Result.vue] onMounted → 渲染原图（从 last_crop 取）
    │
    ▼
-   align_lines(整段译文, n_lines)  →  逐行配对
-   │
+[Vue] invoke('recognize_region')  ← "正在识别…"
+   │   Rust: 从 last_crop 取图 → ocr.recognize（spawn_blocking ONNX）→ 后处理 → 缓存 state.last_ocr
    ▼
-   history.insert（截图 PNG + ocr_lines + line_translations 落库，V002）
-   │
+[Vue] 图上原位显示原文 → invoke('translate_region')  ← "正在翻译…"
+   │   Rust: 从 last_ocr 取原文 → provider.translate（缺 Key → 报错提示去设置）
+   │        → align_lines 配对 → history.insert（截图 PNG + ocr_lines + line_translations 落库）
    ▼
-   返回 SelectResult { shot_path, ocr_lines, translations, original, translated }
-   │
-   ▼
-[Vue Capture.vue] store.lastResult = result → 创建结果窗口（label=result）→ 关闭选区窗口
-   │
-   ▼
-[Vue Result.vue] Canvas: 背景图 + 按 ocr_lines bbox 擦白 + 画 translations
-                  工具栏：原文/译文切换 · 复制 · 保存 · 关闭
-                  （auto_copy 时 Result 自动复制整段译文）
+[Vue] 原位替换为译文
+      工具栏：原文/译文切换 · 复制 · 保存 · 关闭
 ```
+
 
 ---
 
@@ -475,7 +451,7 @@ P1 三个 DU 可并行。完成即发布"完整体验"版本。
 
 ### P2（可做，扩展与工业级）— 4 DU
 
-- DU-17：DeepSeek 故障自动转移
+- DU-17：DeepSeek 故障自动转移（曾预写 `FallbackProvider` 骨架后删除求零死代码，做时重新实现）
 - DU-18：OpenAI / MS / Baidu Provider
 - DU-19：代码签名 + MSI 自动更新（个人用可跳过）
 - DU-20：GPU 加速（DirectML EP，按需）
@@ -508,9 +484,9 @@ P2 各 DU 相对独立，根据用户实际需求选择做或不做。
 | R1 | `oar-ocr` crate 真实性 | DU-04 内同任务验证 + 失败同任务切自实现 | DU-04 |
 | R2 | `ort` Windows MSVC 链接 | `load-dynamic` feature，运行时加载 DLL | DU-01/04 |
 | R3 | PP-OCRv6_medium 单图 ~3s 延迟 | UI 进度文字 + 用户可切 small 档 | DU-12 |
-| R5 | egui 全屏 Overlay 多显示器 + 高 DPI 对齐 | MVP 限单显示器内选区 | DU-08 |
+| R5 | Tauri 全屏选区窗口多显示器 + 高 DPI 对齐 | MVP 限单显示器内选区 | DU-08 |
 | R6 | WGC 首次启动触发 Win11 屏幕捕获权限提示 | 文档说明 + 引导用户允许 | 不可避免 |
-| R7 | HuggingFace 在国内不稳定 | DU-03 多源下载（HF + 阿里云 + Gitee） | DU-03 |
+| R7 | ModelScope 在国内不稳定 | DU-03 多源下载（ModelScope 主源 + `extra_mirrors` 可选镜像前缀） | DU-03 |
 | R9 | `deepseek-v4-flash` 模型名未确认 | **DU-05 内如失败立即切 `deepseek-chat`** | DU-05 |
 | R10 | 单实例运行（防止多开冲突 hotkey） | `single-instance` crate | DU-07 |
 | R11 | DeepSeek 限流故障转移 | P2 DU-17；MVP 手动切 | DU-17 |
