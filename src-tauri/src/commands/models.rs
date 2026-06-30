@@ -36,7 +36,11 @@ pub async fn download_models(
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             match msg {
-                ProgressMsg::Step { role, received, total } => {
+                ProgressMsg::Step {
+                    role,
+                    received,
+                    total,
+                } => {
                     let _ = app_clone.emit(
                         "download-progress",
                         serde_json::json!({ "role": role, "received": received, "total": total }),
@@ -83,7 +87,10 @@ pub async fn download_models(
         match result {
             Ok(()) => {
                 tracing::info!("模型下载完成");
-                let _ = tx_arc.blocking_send(ProgressMsg::Done { ok: true, error: String::new() });
+                let _ = tx_arc.blocking_send(ProgressMsg::Done {
+                    ok: true,
+                    error: String::new(),
+                });
             }
             Err(e) => {
                 tracing::error!(error = %e, "模型下载失败");
@@ -99,8 +106,15 @@ pub async fn download_models(
 }
 
 enum ProgressMsg {
-    Step { role: String, received: u64, total: Option<u64> },
-    Done { ok: bool, error: String },
+    Step {
+        role: String,
+        received: u64,
+        total: Option<u64>,
+    },
+    Done {
+        ok: bool,
+        error: String,
+    },
 }
 
 /// 拉取 DeepSeek 可用模型列表（`GET {base_url}/models`），供设置页下拉。

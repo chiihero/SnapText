@@ -17,14 +17,18 @@ pub fn ensure_capture_window(app: &AppHandle) -> tauri::Result<()> {
     // 创建时隐藏：选区窗口从创建到 Canvas 画上截图之间有 webview 初始化空窗期，
     // 默认白底会整屏白闪。先 hidden 创建，Capture.vue 首次 draw() 完成后主动 show()，
     // 让窗口"直接以截图内容出现"，消除白闪。
-    let _win = WebviewWindowBuilder::new(app, "capture", WebviewUrl::App("index.html#/capture".into()))
-        .title("SnapText 选区")
-        .fullscreen(true)
-        .decorations(false)
-        .always_on_top(true)
-        .resizable(false)
-        .visible(false)
-        .build()?;
+    let _win = WebviewWindowBuilder::new(
+        app,
+        "capture",
+        WebviewUrl::App("index.html#/capture".into()),
+    )
+    .title("SnapText 选区")
+    .fullscreen(true)
+    .decorations(false)
+    .always_on_top(true)
+    .resizable(false)
+    .visible(false)
+    .build()?;
     Ok(())
 }
 
@@ -43,10 +47,16 @@ pub async fn trigger_capture_cmd(app: AppHandle) -> Result<(), String> {
     let start = std::time::Instant::now();
     // 1. 先截图（选区窗口 hidden，截到真实桌面）。
     let dtos = crate::commands::capture::do_capture_all(state.inner()).await?;
-    tracing::info!(capture_total_ms = start.elapsed().as_millis(), "trigger_capture 截图阶段完成");
+    tracing::info!(
+        capture_total_ms = start.elapsed().as_millis(),
+        "trigger_capture 截图阶段完成"
+    );
     // 2. emit 通知前端绘制（绘制完前端自行 show，确保无白闪）。
     let _ = app.emit("capture-ready", &dtos);
-    tracing::info!(total_ms = start.elapsed().as_millis(), "trigger_capture 完成（已 emit，前端将绘制并 show）");
+    tracing::info!(
+        total_ms = start.elapsed().as_millis(),
+        "trigger_capture 完成（已 emit，前端将绘制并 show）"
+    );
     Ok(())
 }
 
@@ -57,12 +67,16 @@ pub fn open_panel(app: &AppHandle, label: &str, title: &str, hash: &str, w: f64,
         let _ = existing.set_focus();
         return;
     }
-    if let Err(e) = WebviewWindowBuilder::new(app, label, WebviewUrl::App(format!("index.html{hash}").into()))
-        .title(title)
-        .inner_size(w, h)
-        .resizable(true)
-        .center()
-        .build()
+    if let Err(e) = WebviewWindowBuilder::new(
+        app,
+        label,
+        WebviewUrl::App(format!("index.html{hash}").into()),
+    )
+    .title(title)
+    .inner_size(w, h)
+    .resizable(true)
+    .center()
+    .build()
     {
         tracing::warn!(error = %e, label, "打开面板窗口失败");
     }
@@ -88,12 +102,25 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                     let _ = w.set_focus();
                 }
             }
-            "settings" => open_panel(&app_handle, "settings", "SnapText 设置", "#/settings", 720.0, 560.0),
-            "history" => open_panel(&app_handle, "history", "SnapText 历史记录", "#/history", 880.0, 600.0),
+            "settings" => open_panel(
+                &app_handle,
+                "settings",
+                "SnapText 设置",
+                "#/settings",
+                720.0,
+                560.0,
+            ),
+            "history" => open_panel(
+                &app_handle,
+                "history",
+                "SnapText 历史记录",
+                "#/history",
+                880.0,
+                600.0,
+            ),
             "quit" => app_handle.exit(0),
             _ => {}
         })
         .build(app)?;
     Ok(())
 }
-

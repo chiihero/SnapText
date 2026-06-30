@@ -189,7 +189,8 @@ fn capture_wgc(monitor: Monitor) -> Result<RgbaImage, CaptureError> {
     // 否则每次失败截图泄漏一个 WGC 后台捕获会话（B3）。
     let result = rx.recv_timeout(WGC_FRAME_TIMEOUT);
     let _ = control.stop();
-    let result = result.map_err(|e| CaptureError::CaptureFailed(format!("WGC 等待首帧失败：{e}")))?;
+    let result =
+        result.map_err(|e| CaptureError::CaptureFailed(format!("WGC 等待首帧失败：{e}")))?;
     result.map_err(CaptureError::CaptureFailed)
 }
 
@@ -293,7 +294,8 @@ fn dpi_scale(monitor: &Monitor) -> f32 {
     // windows-capture 的 as_raw_hmonitor 返回 *mut c_void（即 HMONITOR 句柄）。
     let hmon = HMONITOR(monitor.as_raw_hmonitor());
     let (mut dpi_x, mut _dpi_y) = (0u32, 0u32);
-    let ok = unsafe { GetDpiForMonitor(hmon, MONITOR_DPI_TYPE(0), &mut dpi_x, &mut _dpi_y).is_ok() };
+    let ok =
+        unsafe { GetDpiForMonitor(hmon, MONITOR_DPI_TYPE(0), &mut dpi_x, &mut _dpi_y).is_ok() };
     if ok && dpi_x > 0 {
         dpi_x as f32 / 96.0
     } else {

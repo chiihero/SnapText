@@ -54,7 +54,10 @@ pub(crate) fn to_dto(r: HistoryRecord) -> HistoryDto {
 }
 
 #[tauri::command]
-pub async fn history_list(state: State<'_, AppState>, limit: u32) -> Result<Vec<HistoryDto>, String> {
+pub async fn history_list(
+    state: State<'_, AppState>,
+    limit: u32,
+) -> Result<Vec<HistoryDto>, String> {
     state
         .history
         .list(limit)
@@ -99,7 +102,11 @@ pub async fn history_get_screenshot(
 
 #[tauri::command]
 pub async fn history_delete(state: State<'_, AppState>, id: i64) -> Result<bool, String> {
-    state.history.delete_by_id(id).await.map_err(|e| e.to_string())
+    state
+        .history
+        .delete_by_id(id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -137,7 +144,12 @@ mod tests {
             completion_tokens: Some(5),
             total_cost_cny_milli: None,
             monitor_id: Some("D1".into()),
-            bbox: Some(Bbox { x: 1, y: 2, w: 3, h: 4 }),
+            bbox: Some(Bbox {
+                x: 1,
+                y: 2,
+                w: 3,
+                h: 4,
+            }),
             notes: None,
             screenshot_png: if with_png { Some(vec![1, 2, 3]) } else { None },
             ocr_lines: None,
@@ -172,7 +184,15 @@ mod tests {
     #[test]
     fn to_dto_preserves_bbox_and_lang() {
         let dto = to_dto(sample_record(4, false));
-        assert_eq!(dto.bbox, Some(Bbox { x: 1, y: 2, w: 3, h: 4 }));
+        assert_eq!(
+            dto.bbox,
+            Some(Bbox {
+                x: 1,
+                y: 2,
+                w: 3,
+                h: 4
+            })
+        );
         assert_eq!(dto.source_lang, "en");
         assert_eq!(dto.target_lang, "zh");
         assert_eq!(dto.provider, "deepseek");

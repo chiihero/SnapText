@@ -111,19 +111,13 @@ pub async fn get_last_crop(state: State<'_, AppState>) -> Result<CropResult, Str
 /// 从 `state.last_crop` 取裁剪图（`crop_region` 写入）。结果缓存进
 /// `state.last_ocr` 供 `translate_region`。
 #[tauri::command]
-pub async fn recognize_region(
-    state: State<'_, AppState>,
-) -> Result<OcrResult, String> {
+pub async fn recognize_region(state: State<'_, AppState>) -> Result<OcrResult, String> {
     let (image, monitor_id, bbox) = {
         let last = state.last_crop.lock().await;
         let last = last
             .as_ref()
             .ok_or_else(|| "无缓存裁剪图（请先框选）".to_string())?;
-        (
-            last.image.clone(),
-            last.monitor_id.clone(),
-            last.bbox,
-        )
+        (last.image.clone(), last.monitor_id.clone(), last.bbox)
     };
     let cfg = state.config.lock().await.clone();
     let ocr_lines = run_ocr(&image, state.ocr.as_ref(), &cfg).await?;
@@ -141,16 +135,17 @@ pub async fn recognize_region(
         monitor_id,
         bbox,
     });
-    Ok(OcrResult { ocr_lines, original })
+    Ok(OcrResult {
+        ocr_lines,
+        original,
+    })
 }
 
 /// 第 3 层：整段翻译 + 行配对 + 写历史。
 ///
 /// 从 `state.last_ocr` 取原文与行数（`recognize_region` 写入）。
 #[tauri::command]
-pub async fn translate_region(
-    state: State<'_, AppState>,
-) -> Result<TranslateResult, String> {
+pub async fn translate_region(state: State<'_, AppState>) -> Result<TranslateResult, String> {
     let (ocr_lines, original, monitor_id, bbox) = {
         let last = state.last_ocr.lock().await;
         let last = last
@@ -174,6 +169,9 @@ pub async fn translate_region(
     let (translations, resp) =
         run_translate(&original, ocr_lines.len(), provider.as_ref(), &cfg).await?;
 
+    // 裁剪图编码为 PNG 入历史（裁剪图已由 crop_region 写盘，此处复用内存图）。
+    let screenshot_png = read_last_crop_png(&state).await;
+
     // 写历史（与旧 select_region 同：四要素齐了再落库）。
     let record = HistoryRecord {
         id: 0,
@@ -190,24 +188,7 @@ pub async fn translate_region(
         monitor_id: Some(monitor_id),
         bbox: Some(bbox),
         notes: None,
-        // 裁剪图已由 crop_region 写盘；此处复用同一张图编码入历史。
-        screenshot_png: {
-            let image = state
-                .last_crop
-                .lock()
-                .await
-                .as_ref()
-                .map(|c| c.image.clone());
-            match image {
-                Some(img) => {
-                    let mut buf = Cursor::new(Vec::new());
-                    img.write_to(&mut buf, image::ImageFormat::Png)
-                        .map_err(|e| format!("编码历史截图失败：{e}"))?;
-                    Some(buf.into_inner())
-                }
-                None => None,
-            }
-        },
+        screenshot_png,
         ocr_lines: Some(ocr_lines.clone()),
         line_translations: Some(translations.clone()),
     };
@@ -220,6 +201,20 @@ pub async fn translate_region(
         translated: resp.translated_text,
         provider: resp.provider.to_string(),
     })
+}
+
+/// 取最近一次裁剪图并编码为 PNG（供历史记录入库）。无缓存裁剪图时返回 None（不报错）。
+///
+/// 裁剪图是 `crop_region` 写入 `last_crop` 的，此处复用同一张内存图编码入历史，
+/// 避免在 `HistoryRecord` 字面量里嵌套 4 层 match。
+async fn read_last_crop_png(state: &AppState) -> Option<Vec<u8>> {
+    let image = state
+        .last_crop
+        .lock()
+        .await
+        .as_ref()
+        .map(|c| c.image.clone());
+    image.and_then(|img| encode_png(&img).ok())
 }
 
 /// OCR 纯函数：识别 + 可选后处理。不依赖 Tauri，便于 mock 测试。
@@ -271,7 +266,10 @@ pub async fn run_translate(
 /// bbox 是前端算出的虚拟桌面坐标，先减 monitor 原点转为屏内坐标。
 /// 再 clamp 到图像边界——`crop_imm` 在 `x+w > width` 时会 panic，多屏坐标错位
 /// 或框选越出屏幕时会触发（B6），故超界区域返回错误而非 panic。
-pub fn crop_frame(frame: &snaptext_core::types::CapturedFrame, bbox: Bbox) -> Result<DynamicImage, String> {
+pub fn crop_frame(
+    frame: &snaptext_core::types::CapturedFrame,
+    bbox: Bbox,
+) -> Result<DynamicImage, String> {
     let m = &frame.monitor;
     let img = &frame.image;
     let img_w = img.width();
@@ -286,9 +284,7 @@ pub fn crop_frame(frame: &snaptext_core::types::CapturedFrame, bbox: Bbox) -> Re
     }
     // 选区起点已在图外（如多屏 bbox 错位到屏幕外），无可裁剪区域。
     if x >= img_w || y >= img_h {
-        return Err(format!(
-            "选区起点 ({x},{y}) 超出截图范围 ({img_w}×{img_h})"
-        ));
+        return Err(format!("选区起点 ({x},{y}) 超出截图范围 ({img_w}×{img_h})"));
     }
     // clamp 宽高到图像右下边界，避免 crop_imm 越界 panic。
     let w = w.min(img_w - x);
@@ -297,8 +293,21 @@ pub fn crop_frame(frame: &snaptext_core::types::CapturedFrame, bbox: Bbox) -> Re
     Ok(DynamicImage::ImageRgba8(cropped))
 }
 
+/// 把图像编码为 PNG 字节（结果图写盘 / 历史截图入库 复用）。
+fn encode_png(image: &DynamicImage) -> Result<Vec<u8>, String> {
+    let mut buf = Cursor::new(Vec::new());
+    image
+        .write_to(&mut buf, image::ImageFormat::Png)
+        .map_err(|e| format!("编码 PNG 失败：{e}"))?;
+    Ok(buf.into_inner())
+}
+
 /// 把裁剪图写临时文件 + 返回绝对路径（前端用 convertFileSrc 转 URL）。
-fn write_crop_png(app: &AppHandle, crop: &DynamicImage, monitor_id: &str) -> Result<String, String> {
+fn write_crop_png(
+    app: &AppHandle,
+    crop: &DynamicImage,
+    monitor_id: &str,
+) -> Result<String, String> {
     let tmp_dir = app
         .path()
         .app_cache_dir()
@@ -308,10 +317,7 @@ fn write_crop_png(app: &AppHandle, crop: &DynamicImage, monitor_id: &str) -> Res
     // monitor_id 含 Windows 非法文件名字符（如 \\.\DISPLAY1），需清洗（与 capture.rs 一致）。
     let safe_id = monitor_id.replace(['\\', '/', ':'], "_");
     let path = tmp_dir.join(format!("result_{safe_id}.png"));
-    let mut buf = Cursor::new(Vec::new());
-    crop.write_to(&mut buf, image::ImageFormat::Png)
-        .map_err(|e| format!("编码结果图失败：{e}"))?;
-    std::fs::write(&path, buf.into_inner()).map_err(|e| format!("写结果图失败：{e}"))?;
+    std::fs::write(&path, encode_png(crop)?).map_err(|e| format!("写结果图失败：{e}"))?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -433,10 +439,7 @@ mod integration_tests {
         fn supported_pairs(&self) -> &[snaptext_core::types::LangPair] {
             &[]
         }
-        async fn translate(
-            &self,
-            req: TranslateRequest,
-        ) -> Result<TranslateResponse, CoreError> {
+        async fn translate(&self, req: TranslateRequest) -> Result<TranslateResponse, CoreError> {
             Ok(TranslateResponse {
                 translated_text: req
                     .text
@@ -461,13 +464,23 @@ mod integration_tests {
             lines: vec![
                 OcrLine {
                     text: "Hello".into(),
-                    bbox: Bbox { x: 0, y: 0, w: 100, h: 30 },
+                    bbox: Bbox {
+                        x: 0,
+                        y: 0,
+                        w: 100,
+                        h: 30,
+                    },
                     confidence: 0.9,
                     writing_direction: WritingDirection::Horizontal,
                 },
                 OcrLine {
                     text: "World".into(),
-                    bbox: Bbox { x: 0, y: 40, w: 100, h: 30 },
+                    bbox: Bbox {
+                        x: 0,
+                        y: 40,
+                        w: 100,
+                        h: 30,
+                    },
                     confidence: 0.88,
                     writing_direction: WritingDirection::Horizontal,
                 },
@@ -501,10 +514,9 @@ mod integration_tests {
         // 翻译 + align：两行原文配两行译文。
         let translate = MockTranslate;
         let cfg = default_config();
-        let (translations, resp) =
-            run_translate("Hello\nWorld", 2, &translate, &cfg)
-                .await
-                .expect("翻译应成功");
+        let (translations, resp) = run_translate("Hello\nWorld", 2, &translate, &cfg)
+            .await
+            .expect("翻译应成功");
         assert_eq!(translations, vec!["[译] Hello", "[译] World"]);
         assert_eq!(resp.translated_text, "[译] Hello\n[译] World");
     }
@@ -515,7 +527,12 @@ mod integration_tests {
         let ocr = MockOcr {
             lines: vec![OcrLine {
                 text: " Hel lo ".into(), // 带空格，clean 后变化
-                bbox: Bbox { x: 0, y: 0, w: 10, h: 10 },
+                bbox: Bbox {
+                    x: 0,
+                    y: 0,
+                    w: 10,
+                    h: 10,
+                },
                 confidence: 1.0,
                 writing_direction: WritingDirection::Horizontal,
             }],
@@ -525,7 +542,11 @@ mod integration_tests {
         let crop = dummy_crop();
         let lines = run_ocr(&crop, &ocr, &cfg).await.expect("OCR 应成功");
         // postprocess 后原文应被清洗（trim）。
-        assert!(!lines[0].text.starts_with(' '), "原文应被 trim：{}", lines[0].text);
+        assert!(
+            !lines[0].text.starts_with(' '),
+            "原文应被 trim：{}",
+            lines[0].text
+        );
     }
 
     #[test]
@@ -546,8 +567,16 @@ mod integration_tests {
             captured_at: std::time::SystemTime::now(),
         };
         // 虚拟坐标 (1950, 10) → 屏内 (30, 10)。
-        let crop = crop_frame(&frame, Bbox { x: 1950, y: 10, w: 20, h: 30 })
-            .expect("裁剪应成功");
+        let crop = crop_frame(
+            &frame,
+            Bbox {
+                x: 1950,
+                y: 10,
+                w: 20,
+                h: 30,
+            },
+        )
+        .expect("裁剪应成功");
         assert_eq!(crop.width(), 20);
         assert_eq!(crop.height(), 30);
     }
@@ -569,8 +598,16 @@ mod integration_tests {
             image: RgbaImage::new(10, 10),
             captured_at: std::time::SystemTime::now(),
         };
-        let err = crop_frame(&frame, Bbox { x: 0, y: 0, w: 0, h: 0 })
-            .expect_err("零尺寸应报错");
+        let err = crop_frame(
+            &frame,
+            Bbox {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 0,
+            },
+        )
+        .expect_err("零尺寸应报错");
         assert!(err.contains("0"));
     }
 
@@ -592,8 +629,16 @@ mod integration_tests {
             captured_at: std::time::SystemTime::now(),
         };
         // 选区 (8,8) 起、宽高各 100，远超 10×10 图。
-        let crop = crop_frame(&frame, Bbox { x: 8, y: 8, w: 100, h: 100 })
-            .expect("越界应 clamp 成功而非报错");
+        let crop = crop_frame(
+            &frame,
+            Bbox {
+                x: 8,
+                y: 8,
+                w: 100,
+                h: 100,
+            },
+        )
+        .expect("越界应 clamp 成功而非报错");
         // 应只裁到图像剩余的 2×2。
         assert_eq!(crop.width(), 2);
         assert_eq!(crop.height(), 2);
@@ -616,8 +661,16 @@ mod integration_tests {
             image: RgbaImage::new(10, 10),
             captured_at: std::time::SystemTime::now(),
         };
-        let err = crop_frame(&frame, Bbox { x: 100, y: 100, w: 5, h: 5 })
-            .expect_err("起点越界应报错");
+        let err = crop_frame(
+            &frame,
+            Bbox {
+                x: 100,
+                y: 100,
+                w: 5,
+                h: 5,
+            },
+        )
+        .expect_err("起点越界应报错");
         assert!(err.contains("超出截图范围"), "错误应说明越界：{err}");
     }
 

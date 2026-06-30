@@ -34,9 +34,7 @@ pub struct MonitorDto {
 ///
 /// 前端拿到后打开选区窗口，按 monitor 渲染对应截图。
 #[tauri::command]
-pub async fn capture_all(
-    state: State<'_, AppState>,
-) -> Result<Vec<MonitorDto>, String> {
+pub async fn capture_all(state: State<'_, AppState>) -> Result<Vec<MonitorDto>, String> {
     do_capture_all(&state).await
 }
 
@@ -45,9 +43,7 @@ pub async fn capture_all(
 /// 设计：选区窗口常驻隐藏，热键截图后 emit 事件通知前端绘制（窗口已加载完，
 /// 事件不再丢失）；但 onMounted 仍提供本命令作为兜底（如窗口重载后首次）。
 #[tauri::command]
-pub async fn get_last_capture(
-    state: State<'_, AppState>,
-) -> Result<Vec<MonitorDto>, String> {
+pub async fn get_last_capture(state: State<'_, AppState>) -> Result<Vec<MonitorDto>, String> {
     let captured = state.captured.lock().await;
     if captured.is_empty() {
         return Err("无缓存截图".into());
@@ -55,13 +51,8 @@ pub async fn get_last_capture(
     Ok(frames_to_dtos(&captured))
 }
 
-fn frames_to_dtos(
-    frames: &[snaptext_core::types::CapturedFrame],
-) -> Vec<MonitorDto> {
-    frames
-        .iter()
-        .map(|frame| frame_to_dto(frame))
-        .collect()
+fn frames_to_dtos(frames: &[snaptext_core::types::CapturedFrame]) -> Vec<MonitorDto> {
+    frames.iter().map(frame_to_dto).collect()
 }
 
 fn frame_to_dto(frame: &snaptext_core::types::CapturedFrame) -> MonitorDto {
@@ -88,19 +79,22 @@ fn frame_to_dto(frame: &snaptext_core::types::CapturedFrame) -> MonitorDto {
 pub async fn do_capture_all(state: &AppState) -> Result<Vec<MonitorDto>, String> {
     let start = std::time::Instant::now();
     tracing::info!("capture_all 开始执行");
-    let frames = state
-        .capture
-        .capture_all()
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "capture_all 截图失败");
-            format!("截图失败：{e}")
-        })?;
-    tracing::info!(count = frames.len(), capture_ms = start.elapsed().as_millis(), "capture_all 抓帧完成");
+    let frames = state.capture.capture_all().await.map_err(|e| {
+        tracing::error!(error = %e, "capture_all 截图失败");
+        format!("截图失败：{e}")
+    })?;
+    tracing::info!(
+        count = frames.len(),
+        capture_ms = start.elapsed().as_millis(),
+        "capture_all 抓帧完成"
+    );
 
     let dtos = frames_to_dtos(&frames);
     *state.captured.lock().await = frames;
-    tracing::info!(total_ms = start.elapsed().as_millis(), "capture_all 完成（无写盘）");
+    tracing::info!(
+        total_ms = start.elapsed().as_millis(),
+        "capture_all 完成（无写盘）"
+    );
     Ok(dtos)
 }
 
@@ -132,7 +126,13 @@ pub async fn check_file(path: String) -> Result<String, String> {
         return Ok(format!("不存在: {path}"));
     }
     let meta = std::fs::metadata(p).map_err(|e| format!("读元数据失败: {e}"))?;
-    Ok(format!("存在, 大小={} 字节, 绝对路径={}", meta.len(), p.canonicalize().map(|x| x.display().to_string()).unwrap_or_default()))
+    Ok(format!(
+        "存在, 大小={} 字节, 绝对路径={}",
+        meta.len(),
+        p.canonicalize()
+            .map(|x| x.display().to_string())
+            .unwrap_or_default()
+    ))
 }
 
 #[cfg(test)]
@@ -148,9 +148,12 @@ mod tests {
         let dst = dir.path().join("dst.png");
         std::fs::write(&src, b"PNG-DATA").unwrap();
 
-        save_image_copy(src.to_string_lossy().to_string(), dst.to_string_lossy().to_string())
-            .await
-            .expect("复制应成功");
+        save_image_copy(
+            src.to_string_lossy().to_string(),
+            dst.to_string_lossy().to_string(),
+        )
+        .await
+        .expect("复制应成功");
 
         assert_eq!(std::fs::read(&dst).unwrap(), b"PNG-DATA");
     }
@@ -161,9 +164,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("nope.png");
         let dst = dir.path().join("dst.png");
-        let err = save_image_copy(src.to_string_lossy().to_string(), dst.to_string_lossy().to_string())
-            .await
-            .expect_err("源缺失应报错");
+        let err = save_image_copy(
+            src.to_string_lossy().to_string(),
+            dst.to_string_lossy().to_string(),
+        )
+        .await
+        .expect_err("源缺失应报错");
         assert!(err.contains("复制图片失败"));
     }
 }

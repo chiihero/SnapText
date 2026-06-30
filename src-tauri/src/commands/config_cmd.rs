@@ -23,16 +23,14 @@ pub async fn save_config(
     cfg.save().map_err(|e| format!("保存配置失败：{e}"))?;
 
     // 重建翻译 Provider。
-    let new_translate: Option<Arc<dyn TranslationProvider>> = match build_provider(
-        &cfg.translate,
-        &state.client,
-    ) {
-        Ok(p) => Some(Arc::from(p)),
-        Err(e) => {
-            tracing::warn!(error = %e, "保存配置后重建翻译 Provider 失败（缺 Key？）");
-            None
-        }
-    };
+    let new_translate: Option<Arc<dyn TranslationProvider>> =
+        match build_provider(&cfg.translate, &state.client) {
+            Ok(p) => Some(Arc::from(p)),
+            Err(e) => {
+                tracing::warn!(error = %e, "保存配置后重建翻译 Provider 失败（缺 Key？）");
+                None
+            }
+        };
     let ready = new_translate.is_some();
     *state.translate.lock().await = new_translate;
     *state.config.lock().await = cfg.clone();

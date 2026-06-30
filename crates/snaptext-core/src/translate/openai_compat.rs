@@ -29,19 +29,34 @@ pub struct OpenAiCompatProvider {
     max_retries: u32,
 }
 
+/// 构造 [`OpenAiCompatProvider`] 的入参（字段众多，收敛为 struct 自文档且避免 `too_many_arguments`）。
+pub struct OpenAiCompatParams {
+    pub id: ProviderId,
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+    pub timeout: Duration,
+    pub client: reqwest::Client,
+    pub reasoning_enabled: bool,
+    pub reasoning_effort: ReasoningEffort,
+    pub prompt_template: String,
+    pub max_retries: u32,
+}
+
 impl OpenAiCompatProvider {
-    pub fn new(
-        id: ProviderId,
-        base_url: String,
-        api_key: String,
-        model: String,
-        timeout: Duration,
-        client: reqwest::Client,
-        reasoning_enabled: bool,
-        reasoning_effort: ReasoningEffort,
-        prompt_template: String,
-        max_retries: u32,
-    ) -> Self {
+    pub fn new(params: OpenAiCompatParams) -> Self {
+        let OpenAiCompatParams {
+            id,
+            base_url,
+            api_key,
+            model,
+            timeout,
+            client,
+            reasoning_enabled,
+            reasoning_effort,
+            prompt_template,
+            max_retries,
+        } = params;
         Self {
             client,
             base_url,
@@ -100,24 +115,12 @@ impl TranslationProvider for OpenAiCompatProvider {
                 "请先在设置选择模型".into(),
             )));
         }
-        // 重试循环：仅重试可重试错误（超时/网络/5xx/429），指数退避。
-        let mut last_err: Option<CoreError> = None;
-        for attempt in 0..=self.max_retries {
-            match self.do_once(&req).await {
-                Ok(resp) => return Ok(resp),
-                Err(e) => {
-                    let retryable = super::is_retryable(&e);
-                    last_err = Some(e);
-                    if retryable && attempt < self.max_retries {
-                        let delay = Duration::from_millis(super::RETRY_BASE_MS * 2u64.pow(attempt));
-                        tokio::time::sleep(delay).await;
-                        continue;
-                    }
-                    break;
-                }
-            }
-        }
-        Err(last_err.expect("重试循环至少执行一次，必有 last_err"))
+        // 重试包装：仅重试可重试错误（超时/网络/5xx/429），指数退避。
+        super::with_retry(self.max_retries, || {
+            let req = &req;
+            async move { self.do_once(req).await }
+        })
+        .await
     }
 }
 
@@ -149,21 +152,8 @@ impl OpenAiCompatProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    TranslateError::Timeout
-                } else {
-                    TranslateError::Request(e.to_string())
-                }
-            })?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(CoreError::Translate(TranslateError::Api {
-                status: status.as_u16(),
-                body,
-            }));
-        }
+            .map_err(super::classify_send_err)?;
+        let resp = super::ensure_2xx(resp).await?;
         let parsed: ChatResponse = resp
             .json()
             .await
@@ -206,18 +196,18 @@ mod tests {
                 return;
             }
         };
-        let provider = OpenAiCompatProvider::new(
-            ProviderId::new_static("deepseek"),
-            "https://api.deepseek.com/v1".into(),
-            key,
-            "deepseek-v4-flash".into(),
-            Duration::from_secs(30),
-            reqwest::Client::new(),
-            false,
-            ReasoningEffort::High,
-            crate::translate::prompt::DEFAULT_PROMPT_TEMPLATE.to_string(),
-            2,
-        );
+        let provider = OpenAiCompatProvider::new(OpenAiCompatParams {
+            id: ProviderId::new_static("deepseek"),
+            base_url: "https://api.deepseek.com/v1".into(),
+            api_key: key,
+            model: "deepseek-v4-flash".into(),
+            timeout: Duration::from_secs(30),
+            client: reqwest::Client::new(),
+            reasoning_enabled: false,
+            reasoning_effort: ReasoningEffort::High,
+            prompt_template: crate::translate::prompt::DEFAULT_PROMPT_TEMPLATE.to_string(),
+            max_retries: 2,
+        });
         let req = TranslateRequest {
             text: "Hello, world.".into(),
             source: Lang::En,

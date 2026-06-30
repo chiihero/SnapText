@@ -138,10 +138,7 @@ pub fn delete_before(conn: &Connection, before: SystemTime) -> Result<u64, Histo
 /// 按主键删除单条记录，返回是否删除成功。
 pub fn delete_by_id(conn: &Connection, id: i64) -> Result<bool, HistoryError> {
     let n = conn
-        .execute(
-            "DELETE FROM translation_history WHERE id = ?1",
-            params![id],
-        )
+        .execute("DELETE FROM translation_history WHERE id = ?1", params![id])
         .map_err(|e| HistoryError::Db(e.to_string()))?;
     Ok(n > 0)
 }

@@ -54,100 +54,74 @@ impl SqliteHistoryStore {
             .map_err(|e| HistoryError::Pool(e.to_string()))?;
         dao::cleanup(&conn, retention_days, max_records)
     }
+
+    /// 在 blocking 线程池执行一次 DB 操作，统一处理连接获取 / JoinError / 错误转换。
+    ///
+    /// 各 `HistoryStore` 方法的样板完全一致（pool.clone → spawn_blocking → get? → dao
+    /// → 双层 map_err），抽出后每个方法压到 2~3 行。`label` 用于 JoinError 诊断。
+    async fn spawn_db<T, F>(&self, label: &str, f: F) -> Result<T, CoreError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&rusqlite::Connection) -> Result<T, HistoryError> + Send + 'static,
+    {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| HistoryError::Pool(e.to_string()))?;
+            // PooledConnection deref 到 Connection，解引用后按 &Connection 调 dao。
+            f(&conn)
+        })
+        .await
+        .map_err(|e| CoreError::History(HistoryError::Db(format!("{label}线程异常：{e}"))))?
+        .map_err(CoreError::History)
+    }
 }
 
 #[async_trait]
 impl HistoryStore for SqliteHistoryStore {
     async fn insert(&self, record: HistoryRecord) -> Result<(), CoreError> {
-        let pool = self.pool.clone();
-        tokio::task::spawn_blocking(move || -> Result<(), HistoryError> {
-            let conn = pool.get().map_err(|e| HistoryError::Pool(e.to_string()))?;
-            dao::insert(&conn, &record)
-        })
-        .await
-        .map_err(|e| CoreError::History(HistoryError::Db(format!("历史记录线程异常：{e}"))))?
-        .map_err(CoreError::History)
+        self.spawn_db("历史记录", move |conn| dao::insert(conn, &record))
+            .await
     }
 
     async fn list(&self, limit: u32) -> Result<Vec<HistoryRecord>, CoreError> {
-        let pool = self.pool.clone();
-        tokio::task::spawn_blocking(move || -> Result<Vec<HistoryRecord>, HistoryError> {
-            let conn = pool.get().map_err(|e| HistoryError::Pool(e.to_string()))?;
-            dao::list(&conn, limit, None)
-        })
-        .await
-        .map_err(|e| CoreError::History(HistoryError::Db(format!("历史读取线程异常：{e}"))))?
-        .map_err(CoreError::History)
+        self.spawn_db("历史读取", move |conn| dao::list(conn, limit, None))
+            .await
     }
 
     async fn search(&self, limit: u32, keyword: &str) -> Result<Vec<HistoryRecord>, CoreError> {
-        let pool = self.pool.clone();
         let keyword = keyword.to_string();
-        tokio::task::spawn_blocking(move || -> Result<Vec<HistoryRecord>, HistoryError> {
-            let conn = pool.get().map_err(|e| HistoryError::Pool(e.to_string()))?;
-            dao::list(&conn, limit, Some(&keyword))
+        self.spawn_db("历史搜索", move |conn| {
+            dao::list(conn, limit, Some(&keyword))
         })
         .await
-        .map_err(|e| CoreError::History(HistoryError::Db(format!("历史搜索线程异常：{e}"))))?
-        .map_err(CoreError::History)
     }
 
     async fn delete_before(&self, before: SystemTime) -> Result<u64, CoreError> {
-        let pool = self.pool.clone();
-        tokio::task::spawn_blocking(move || -> Result<u64, HistoryError> {
-            let conn = pool.get().map_err(|e| HistoryError::Pool(e.to_string()))?;
-            dao::delete_before(&conn, before)
-        })
-        .await
-        .map_err(|e| CoreError::History(HistoryError::Db(format!("历史删除线程异常：{e}"))))?
-        .map_err(CoreError::History)
+        self.spawn_db("历史删除", move |conn| dao::delete_before(conn, before))
+            .await
     }
 
     async fn delete_by_id(&self, id: i64) -> Result<bool, CoreError> {
-        let pool = self.pool.clone();
-        tokio::task::spawn_blocking(move || -> Result<bool, HistoryError> {
-            let conn = pool.get().map_err(|e| HistoryError::Pool(e.to_string()))?;
-            dao::delete_by_id(&conn, id)
-        })
-        .await
-        .map_err(|e| CoreError::History(HistoryError::Db(format!("历史删除线程异常：{e}"))))?
-        .map_err(CoreError::History)
+        self.spawn_db("历史删除", move |conn| dao::delete_by_id(conn, id))
+            .await
     }
 
     async fn clear_all(&self) -> Result<u64, CoreError> {
-        let pool = self.pool.clone();
-        tokio::task::spawn_blocking(move || -> Result<u64, HistoryError> {
-            let conn = pool.get().map_err(|e| HistoryError::Pool(e.to_string()))?;
-            dao::clear_all(&conn)
-        })
-        .await
-        .map_err(|e| CoreError::History(HistoryError::Db(format!("历史清空线程异常：{e}"))))?
-        .map_err(CoreError::History)
+        self.spawn_db("历史清空", dao::clear_all).await
     }
 
     async fn stats(&self) -> Result<HistoryStats, CoreError> {
-        let pool = self.pool.clone();
-        let total = tokio::task::spawn_blocking(move || -> Result<u64, HistoryError> {
-            let conn = pool.get().map_err(|e| HistoryError::Pool(e.to_string()))?;
-            dao::stats(&conn)
-        })
-        .await
-        .map_err(|e| CoreError::History(HistoryError::Db(format!("历史统计线程异常：{e}"))))?
-        .map_err(CoreError::History)?;
+        let total = self.spawn_db::<u64, _>("历史统计", dao::stats).await?;
         Ok(HistoryStats {
             total_records: total,
         })
     }
 
     async fn get_screenshot(&self, id: i64) -> Result<Option<Vec<u8>>, CoreError> {
-        let pool = self.pool.clone();
-        tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>, HistoryError> {
-            let conn = pool.get().map_err(|e| HistoryError::Pool(e.to_string()))?;
-            dao::get_screenshot(&conn, id)
+        self.spawn_db("历史截图读取", move |conn| {
+            dao::get_screenshot(conn, id)
         })
         .await
-        .map_err(|e| CoreError::History(HistoryError::Db(format!("历史截图读取线程异常：{e}"))))?
-        .map_err(CoreError::History)
     }
 }
 
@@ -278,7 +252,12 @@ mod tests {
         rec.screenshot_png = Some(vec![9, 9, 9]);
         rec.ocr_lines = Some(vec![crate::types::OcrLine {
             text: "hi".into(),
-            bbox: crate::types::Bbox { x: 1, y: 2, w: 3, h: 4 },
+            bbox: crate::types::Bbox {
+                x: 1,
+                y: 2,
+                w: 3,
+                h: 4,
+            },
             confidence: 0.5,
             writing_direction: crate::types::WritingDirection::Horizontal,
         }]);

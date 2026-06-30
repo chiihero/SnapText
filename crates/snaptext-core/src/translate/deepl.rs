@@ -69,24 +69,12 @@ impl TranslationProvider for DeepLProvider {
     }
 
     async fn translate(&self, req: TranslateRequest) -> Result<TranslateResponse, CoreError> {
-        // 重试循环：仅重试可重试错误（超时/网络/5xx/429），指数退避。
-        let mut last_err: Option<CoreError> = None;
-        for attempt in 0..=self.max_retries {
-            match self.do_once(&req).await {
-                Ok(resp) => return Ok(resp),
-                Err(e) => {
-                    let retryable = super::is_retryable(&e);
-                    last_err = Some(e);
-                    if retryable && attempt < self.max_retries {
-                        let delay = Duration::from_millis(super::RETRY_BASE_MS * 2u64.pow(attempt));
-                        tokio::time::sleep(delay).await;
-                        continue;
-                    }
-                    break;
-                }
-            }
-        }
-        Err(last_err.expect("重试循环至少执行一次，必有 last_err"))
+        // 重试包装：仅重试可重试错误（超时/网络/5xx/429），指数退避。
+        super::with_retry(self.max_retries, || {
+            let req = &req;
+            async move { self.do_once(req).await }
+        })
+        .await
     }
 }
 
@@ -113,21 +101,8 @@ impl DeepLProvider {
             .form(&form)
             .send()
             .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    TranslateError::Timeout
-                } else {
-                    TranslateError::Request(e.to_string())
-                }
-            })?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(CoreError::Translate(TranslateError::Api {
-                status: status.as_u16(),
-                body,
-            }));
-        }
+            .map_err(super::classify_send_err)?;
+        let resp = super::ensure_2xx(resp).await?;
         let parsed: DeepLResponse = resp
             .json()
             .await
