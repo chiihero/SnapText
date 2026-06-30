@@ -13,11 +13,68 @@ use std::time::Duration;
 
 use snaptext_core::config::Tier;
 use snaptext_core::Config;
+use tauri::http::{Response, StatusCode};
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{Builder, GlobalShortcutExt, Shortcut, ShortcutState};
 
 fn main() {
     tauri::Builder::default()
+        // shot:// 自定义协议：选区窗口 <img> 经此从内存直接取全屏截图 BMP 字节，
+        // 取代"全屏 RGBA 写临时 BMP 文件 + webview 读盘"（省 ~150ms 写盘/读盘）。
+        // 监听器解析 URI 里的 monitor safe_id，从 state.captured 找对应帧编码 BMP 返回。
+        .register_asynchronous_uri_scheme_protocol("shot", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            // 异步协议：取 tokio Mutex（captured）需 await，放独立 task 执行。
+            tauri::async_runtime::spawn(async move {
+                let path = request.uri().path();
+                // path 形如 "/DISPLAY1"（safe_id：原 monitor id 已替换非法字符）。
+                let wanted = path.trim_start_matches('/');
+                let state = app.state::<crate::state::AppState>();
+                let bytes = {
+                    let captured = state.captured.lock().await;
+                    captured
+                        .iter()
+                        .find(|f| {
+                            let safe = f.monitor.id.as_str().replace(['\\', '/', ':'], "_");
+                            safe == wanted
+                        })
+                        .map(|f| f.image.clone())
+                };
+                match bytes {
+                    Some(image) => {
+                        let mut buf = std::io::Cursor::new(Vec::new());
+                        match image.write_to(&mut buf, image::ImageFormat::Bmp) {
+                            Ok(()) => {
+                                let body = buf.into_inner();
+                                responder.respond(
+                                    Response::builder()
+                                        .header("Content-Type", "image/bmp")
+                                        .body(body)
+                                        .unwrap(),
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "shot 协议编码 BMP 失败");
+                                responder.respond(
+                                    Response::builder()
+                                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                        .body(Vec::new())
+                                        .unwrap(),
+                                );
+                            }
+                        }
+                    }
+                    None => {
+                        responder.respond(
+                            Response::builder()
+                                .status(StatusCode::NOT_FOUND)
+                                .body(Vec::new())
+                                .unwrap(),
+                        );
+                    }
+                }
+            });
+        })
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // 第二实例：聚焦已有主窗口。
             if let Some(w) = app.get_webview_window("main") {
@@ -31,7 +88,8 @@ fn main() {
                     // 只响应按下。
                     if event.state() == ShortcutState::Pressed {
                         let _ = shortcut;
-                        // 先截图再开窗（避免窗口盖住桌面截到白屏），异步执行。
+                        // 选区窗口启动时已预创建并隐藏（不遮挡桌面），此处截图后
+                        // emit 事件通知前端绘制 + show，省掉每次 WebView2 冷启动。
                         let handle = app.app_handle().clone();
                         tauri::async_runtime::spawn(async move {
                             if let Err(e) = window::trigger_capture_cmd(handle).await {
@@ -73,6 +131,10 @@ fn main() {
 
             // 托盘：显示主窗口 / 设置 / 历史 / 退出。
             window::build_tray(app.handle())?;
+
+            // 预创建选区窗口并隐藏（WebView2/Vue 实例常驻预热）。热键时直接 show，
+            // 省掉每次创建窗口的 ~400ms 冷启动（参照 Snipaste/Flameshot 模式）。
+            window::ensure_capture_window(app.handle())?;
 
             tracing::info!("SnapText 启动完成");
             Ok(())

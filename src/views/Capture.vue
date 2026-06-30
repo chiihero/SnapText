@@ -1,13 +1,15 @@
 <script setup lang="ts">
-// 选区窗口：全屏显示主屏截图 + Canvas 鼠标框选 + 抬起仅调 crop_region。
+// 选区窗口（常驻隐藏）：全屏显示主屏截图 + Canvas 鼠标框选 + 抬起仅调 crop_region。
 //
-// 截图在 Rust 端 trigger_capture_cmd 里"先截图再开窗"完成（避免窗口盖住桌面
-// 截到白屏自己）。窗口打开后主动调 get_last_capture 拉取已缓存截图渲染。
-// 框选抬起只跑 crop_region（裁剪+写临时图，几十 ms），立即创建结果窗口，
-// 关闭选区窗。OCR/翻译由结果窗口 onMounted 分阶段调用（recognize/translate）。
+// 窗口在 main setup 时预创建并隐藏（WebView2/Vue 已热），热键触发时：
+// Rust 端先截图（窗口仍 hidden 不遮挡）→ emit("capture-ready") → show。
+// 因窗口常驻、页面早已加载，事件可靠送达（旧版"子窗口未加载完丢事件"竞态已不存在）。
+// Esc/抬起成功后 hide() 而非 close()（窗口常驻复用）。
+// 截图经 shot:// 自定义协议从内存直接取 BMP（不再写临时文件）。
 import { onMounted, ref } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { listen } from "@tauri-apps/api/event";
 import { api, type MonitorDto } from "../api";
 
 const canvas = ref<HTMLCanvasElement | null>(null);
@@ -18,44 +20,68 @@ const dragStart = ref<{ x: number; y: number } | null>(null);
 const dragCur = ref<{ x: number; y: number } | null>(null);
 // 选区蒙版不透明度（读 config.ui.overlay_dim_alpha，默认 0.5）。
 const overlayAlpha = ref(0.5);
-// 窗口以 hidden 创建（window.rs），首次画上截图后 show() 才可见，消除白闪。
-// flag 保证只 show 一次（draw() 还会被拖拽反复调用）。
+// 窗口常驻：每次 show 前必须重置为 false，否则第二次截图直接 show 不等绘制 → 白闪。
+// 收到 capture-ready（后端截图就绪）时置 false，draw() 首次画上截图 + 双层 rAF 后才 show。
 const firstDrawn = ref(false);
+// unlisten 卸载函数（窗口常驻，理论上 onMounted 只跑一次，保留以便清理）。
+let unlisten: (() => void) | null = null;
 
 onMounted(async () => {
-  // 主动拉取 Rust 端已缓存的截图（trigger_capture_cmd 先截图后开窗）。
   api.logDiag("capture_timing", "onMounted");
   // 读蒙版不透明度配置（不阻塞截图加载，失败用默认）。
   api.getConfig().then((cfg) => {
     overlayAlpha.value = cfg.ui.overlay_dim_alpha ?? 0.5;
   }).catch(() => {});
+
+  // 监听后端"截图就绪"事件：热键截图完成后触发，此时窗口即将 show，
+  // 收到即重置绘制状态 + 拉取截图渲染。窗口常驻所以事件可靠。
   try {
-    const fetchStart = performance.now();
-    const monitors = await api.getLastCapture();
-    api.logDiag("capture_timing", `getLastCapture done in ${(performance.now() - fetchStart).toFixed(0)}ms`);
-    primary.value = monitors.find((m) => m.primary) ?? monitors[0] ?? null;
-    if (!primary.value) {
-      status.value = "未找到显示器";
-      return;
-    }
-    status.value = "拖动鼠标框选文字区域 · Esc 取消";
-    const imgStart = performance.now();
-    img.onload = () => {
-      api.logDiag("capture_timing", `img.onload in ${(performance.now() - imgStart).toFixed(0)}ms`);
-      draw();
-    };
-    img.src = api.fileSrc(primary.value.shot_path);
+    unlisten = await listen<MonitorDto[]>("capture-ready", (event) => {
+      api.logDiag("capture_timing", "收到 capture-ready 事件");
+      firstDrawn.value = false;
+      loadAndDraw(event.payload);
+    });
+    api.logDiag("capture_timing", "capture-ready listener 已注册");
   } catch (e) {
-    status.value = `加载截图失败：${e}`;
+    api.logDiag("capture_timing", `listen 注册失败：${e}`);
   }
 
-  // Esc 关闭窗口。
+  // 兜底：若窗口是首次加载（还没收到任何 capture-ready，但 state.captured 已有缓存，
+  // 如调试时手动 reload），主动拉取一次。
+  try {
+    const monitors = await api.getLastCapture();
+    if (monitors.length > 0) {
+      loadAndDraw(monitors);
+    }
+  } catch {
+    // 无缓存正常（首次启动未截图），等 capture-ready 即可。
+  }
+
+  // Esc 关闭（隐藏）窗口。
   window.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape") {
-      getCurrentWindow().close();
+      getCurrentWindow().hide();
     }
   });
 });
+
+// 拉取截图配置 + 渲染：从 monitors 选主屏，img.src 用 shot:// URI 直接从内存取 BMP。
+function loadAndDraw(monitors: MonitorDto[]) {
+  const fetchStart = performance.now();
+  primary.value = monitors.find((m) => m.primary) ?? monitors[0] ?? null;
+  if (!primary.value) {
+    status.value = "未找到显示器";
+    return;
+  }
+  status.value = "拖动鼠标框选文字区域 · Esc 取消";
+  const imgStart = performance.now();
+  img.onload = () => {
+    api.logDiag("capture_timing", `img.onload in ${(performance.now() - imgStart).toFixed(0)}ms (fetch dto ${(performance.now() - fetchStart).toFixed(0)}ms)`);
+    draw();
+  };
+  // shot_path 已是 shot:// URI（http://shot.localhost/<id>），直接当 src，从内存取 BMP。
+  img.src = primary.value.shot_path;
+}
 
 function pos(ev: MouseEvent): { x: number; y: number } {
   const c = canvas.value!;
@@ -112,8 +138,10 @@ async function onUp() {
       resizable: true,
       center: true,
     });
-    // 关闭选区窗口。
-    await getCurrentWindow().close();
+    // 隐藏选区窗口（常驻复用，不 close）。
+    dragStart.value = null;
+    dragCur.value = null;
+    await getCurrentWindow().hide();
   } catch (e) {
     status.value = `处理失败：${e}`;
   }
@@ -129,7 +157,7 @@ function draw() {
   // 背景：截图按窗口尺寸拉伸（截图是物理像素，窗口是逻辑像素）。
   const scale = primary.value.scale || 1;
   ctx.drawImage(img, 0, 0, c.width, c.height);
-  // 首次画上截图后才显示窗口（消除创建→绘制间的白闪），只触发一次。
+  // 首次画上截图后才显示窗口（消除创建→绘制间的白闪），每次 show 前重置 firstDrawn。
   // 双层 rAF：drawImage 写 canvas 缓冲是同步的，但浏览器合成该帧到屏幕要等
   // 下一渲染帧。若 show() 早于合成，WebView2 默认白底会露一帧 → 短暂白闪。
   // 推迟 show 到两次 rAF 之后（约 +32ms），确保 canvas 帧已合成再显窗。

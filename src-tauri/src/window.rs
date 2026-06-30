@@ -2,21 +2,21 @@
 
 use tauri::{
     menu::{Menu, MenuItem},
-    AppHandle, Manager, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 
-/// 创建（或聚焦已存在的）选区窗口。
+/// 启动时预创建选区窗口并隐藏（WebView2/Vue 实例常驻预热）。
 ///
-/// 全屏无边框置顶，覆盖整个主屏。Capture.vue 挂载后读已缓存的截图渲染。
-pub fn open_capture_window(app: &AppHandle) -> tauri::Result<()> {
-    if let Some(existing) = app.get_webview_window("capture") {
-        existing.show()?;
-        existing.set_focus()?;
+/// 热键时仅 `show_capture_window`（已存在的窗口直接 show），省掉每次创建窗口的
+/// ~400ms WebView2 冷启动（参照 Snipaste/Flameshot 模式）。窗口 hidden 不遮挡桌面，
+/// 截图完成后再 show。Capture.vue 启动后监听 `capture-ready` 事件，收到才绘制截图。
+pub fn ensure_capture_window(app: &AppHandle) -> tauri::Result<()> {
+    if app.get_webview_window("capture").is_some() {
         return Ok(());
     }
-    // 创建时隐藏：选区窗口从创建到 Canvas 画上截图之间有 WebView 冷启动 +
-    // 拉取截图 + 解码的空窗期，默认白底会整屏白闪。先 hidden 创建，Capture.vue
-    // 首次 draw() 完成后主动 show()，让窗口"直接以截图内容出现"，消除白闪。
+    // 创建时隐藏：选区窗口从创建到 Canvas 画上截图之间有 webview 初始化空窗期，
+    // 默认白底会整屏白闪。先 hidden 创建，Capture.vue 首次 draw() 完成后主动 show()，
+    // 让窗口"直接以截图内容出现"，消除白闪。
     let _win = WebviewWindowBuilder::new(app, "capture", WebviewUrl::App("index.html#/capture".into()))
         .title("SnapText 选区")
         .fullscreen(true)
@@ -30,22 +30,23 @@ pub fn open_capture_window(app: &AppHandle) -> tauri::Result<()> {
 
 /// Tauri 命令：前端"开始截图"按钮调用，与全局热键走同一路径。
 ///
-/// 关键时序：**先截图（此时无遮挡）→ 再创建选区窗口**。
-/// 若先开窗口再截图，全屏窗口会盖住桌面，截到的就是白屏自己。
-/// 截图结果存 state.captured，Capture.vue onMounted 主动调 get_last_capture 拉取
-/// （不用 emit 事件，避免窗口页面未加载完时事件丢失的竞态）。
+/// 关键时序：**先截图（选区窗口仍 hidden 不遮挡）→ emit 事件通知前端绘制**。
+/// 选区窗口启动时已预创建（main setup），所以前端页面早已加载，emit 事件可靠送达
+/// （旧版"子窗口未加载完丢事件"的竞态已不存在）。
+///
+/// show 由前端负责：Capture.vue 收到 `capture-ready` 后从 shot:// URI 拉截图、
+/// draw 画上 canvas、双层 rAF 等合成完才 show。若后端 emit 后立即 show，窗口会
+/// 在 canvas 绘制前暴露白底（白闪），故后端不 show。
 #[tauri::command]
 pub async fn trigger_capture_cmd(app: AppHandle) -> Result<(), String> {
-    use tauri::Manager;
     let state = app.state::<crate::state::AppState>();
     let start = std::time::Instant::now();
-    // 1. 先截图（无遮挡，截到真实桌面）。
-    crate::commands::capture::do_capture_all(&app, state.inner()).await?;
+    // 1. 先截图（选区窗口 hidden，截到真实桌面）。
+    let dtos = crate::commands::capture::do_capture_all(state.inner()).await?;
     tracing::info!(capture_total_ms = start.elapsed().as_millis(), "trigger_capture 截图阶段完成");
-    // 2. 再开窗（Capture.vue 挂载后主动拉取已缓存截图）。
-    let win_start = std::time::Instant::now();
-    open_capture_window(&app).map_err(|e| format!("打开选区窗口失败：{e}"))?;
-    tracing::info!(open_window_ms = win_start.elapsed().as_millis(), total_ms = start.elapsed().as_millis(), "trigger_capture 选区窗口已创建");
+    // 2. emit 通知前端绘制（绘制完前端自行 show，确保无白闪）。
+    let _ = app.emit("capture-ready", &dtos);
+    tracing::info!(total_ms = start.elapsed().as_millis(), "trigger_capture 完成（已 emit，前端将绘制并 show）");
     Ok(())
 }
 

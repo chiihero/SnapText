@@ -9,6 +9,7 @@
     "core:window:allow-create",
     "core:window:allow-close",
     "core:window:allow-show",
+    "core:window:allow-hide",
     "core:window:allow-set-focus",
     "core:webview:default",
     "core:webview:allow-create-webview-window",
