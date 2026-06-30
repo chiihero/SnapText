@@ -14,12 +14,16 @@ pub fn open_capture_window(app: &AppHandle) -> tauri::Result<()> {
         existing.set_focus()?;
         return Ok(());
     }
+    // 创建时隐藏：选区窗口从创建到 Canvas 画上截图之间有 WebView 冷启动 +
+    // 拉取截图 + 解码的空窗期，默认白底会整屏白闪。先 hidden 创建，Capture.vue
+    // 首次 draw() 完成后主动 show()，让窗口"直接以截图内容出现"，消除白闪。
     let _win = WebviewWindowBuilder::new(app, "capture", WebviewUrl::App("index.html#/capture".into()))
         .title("SnapText 选区")
         .fullscreen(true)
         .decorations(false)
         .always_on_top(true)
         .resizable(false)
+        .visible(false)
         .build()?;
     Ok(())
 }

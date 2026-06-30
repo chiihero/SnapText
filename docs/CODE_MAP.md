@@ -2,7 +2,17 @@
 
 > 给 AI 用：快速定位"改 X 看哪里"、"动 A 影响哪些 B"、"哪些文件禁止碰"。
 
-最后更新：2026-06-30（**DeepSeek 翻译改造**：① 模型不再硬编码——`DeepSeekConfig.model` 默认空串，设置页填 Key 后调新命令 `list_deepseek_models`（`GET {base_url}/models`）动态拉取模型 id 填下拉，下拉可手输兼容第三方端点；空 model 翻译时报错"请先选择模型"。② 新增思考模式配置 `reasoning_enabled`（默认 false，翻译简单场景官方建议关）+ `reasoning_effort`（high/max）。请求体组合：关→`thinking:{type:"disabled"}`；开→`thinking:{type:"enabled"}`+`reasoning_effort`。删旧默认 `deepseek-chat` + 过时注释。⚠️ **DeepSeek API 唯一依据为中文官方文档 `api-docs.deepseek.com/zh-cn/`，英文版已过时**——见 DESIGN §4.3「DeepSeek API 事实基准」。改动文件：`config.rs`、`translate/openai_compat.rs`、`translate/mod.rs`、`src-tauri/commands/models.rs`、`src-tauri/main.rs`、`api.ts`、`Settings.vue`。）
+最后更新：2026-06-30（**选区窗口消除截图白闪**：选区窗口从创建到 Canvas 画上截图之间有 WebView2 冷启动 + 拉取截图 + 解码的空窗期，默认白底窗口会整屏白闪一下。`window.rs::open_capture_window` 创建时改 `.visible(false)`，`Capture.vue` 首次 `draw()` 成功画上截图后经双层 `requestAnimationFrame` 等 WebView 合成完该帧，再 `getCurrentWindow().show()`（`firstDrawn` flag 保证只 show 一次）。双层 rAF 是关键：`drawImage` 写 canvas 缓冲是同步的，但浏览器合成到屏幕要等下一渲染帧，若 `show()` 早于合成 WebView2 默认白底会露一帧（短白闪）。效果：热键后桌面静止 ~200-500ms（不可见等待）→ 选区窗直接以截图内容出现，无白闪；总响应时间不变。改动文件：`src-tauri/src/window.rs`、`src/views/Capture.vue`。）
+
+2026-06-30（**日志配置接线 + 翻译重试接入 + 删除 3 个无消费方字段**：排查"有配置/UI 但后端没接线"的同类 bug 第二、三批。**A 组日志**：`main.rs::init_logging` 改签名接收 `&Config`，读 `general.log_level`（空回退 "info"，env 优先级最高）和 `general.log_file`（None 用默认路径），此前两者均硬编码。**B 组重试**：`max_retries` 字段此前零重试逻辑（Provider 失败直接 `?`），现三个 Provider（openai_compat/deepl/microsoft）各加内联重试循环，新增 `translate::is_retryable(&CoreError)` + `RETRY_BASE_MS`（500ms）共用判定/退避。**智能重试边界**：重试 `Timeout`/`Request`/HTTP 5xx/429；不重试 HTTP 其他 4xx（鉴权）/`Parse`/`UnsupportedPair`。退避 `500ms * 2^attempt`。各 Provider 把单次逻辑抽成 `do_once`，`translate()` 包重试循环。**D 组删除**：`onboarding_completed`（引导页不存在）、`hotkey.cancel`（取消靠 Capture.vue 写死 Escape）、`fallback_to_dxgi`（DXGI 回退为无条件合理默认，开关反而有害）—— 三字段删 config + api.ts 类型 + Settings.vue（cancel 输入框）；`CaptureConfig` 删字段后留空 struct 供未来扩展；旧 config.toml 残留字段被 `#[serde(default)]` 忽略。**C 组故障转移暂不做**（`fallback_order` 仍是死代码，待决策）。改动文件：`main.rs`、`config.rs`、`translate/mod.rs`、`translate/openai_compat.rs`、`translate/deepl.rs`、`translate/microsoft.rs`、`api.ts`、`Settings.vue`。）
+
+2026-06-30（**接线历史清理 + 蒙版透明度配置，删除过度设计的 show_original**：排查"有配置/UI 但后端没接线"的同类 bug 后修复第一批。① **历史清理接线**：`retention_days`/`max_records`/`auto_clean_on_start` 三字段此前是死代码（`cleanup_blocking` 实现了但启动时从不调用），在 `state.rs::AppState::build` 构造完 history 后按 config 调一次 `cleanup_blocking`，设置页"启动时自动清理"开关 + 滑块生效。② **蒙版透明度接线**：`overlay_dim_alpha` 此前 Capture.vue 硬编码 `rgba(0,0,0,0.4)`，改为 onMounted 读 `cfg.ui.overlay_dim_alpha`（异步拉取，默认 0.5）。③ **删除 `show_original`**：原"点击行显示原文"开关 Result.vue 从未读取，且 Result.vue 自身的点击切换交互已完整（默认译文 + 工具栏全局切换 + 单行点击切换），该开关属过度设计，删字段（`config.rs`/`api.ts`）+ 设置项（`Settings.vue`）；旧 config.toml 残留字段被 `#[serde(default)]` 忽略，平滑。改动文件：`state.rs`、`Capture.vue`、`config.rs`、`api.ts`、`Settings.vue`。）
+
+2026-06-30（**翻译 prompt 双模式（系统默认/自定义）**：在「prompt 可配置化」基础上加 `TranslateConfig.prompt_use_custom`（默认 false）。**系统默认模式**（默认）：UI 只读展示，渲染走后端固定常量——后端升级默认 prompt 时所有默认模式用户自动受益（不读 `prompt_template` 字段，修了"配置固化"隐患）。**自定义模式**：渲染走 `prompt_template` 字段，切到自定义时若该字段为空则预填系统默认值作为编辑起点。新增命令 `get_default_prompt()`（`commands/config_cmd.rs`）返回 `prompt.rs::DEFAULT_PROMPT_TEMPLATE` 字符串供前端只读展示——**前端零硬编码常量**（删 `Settings.vue` 原 `DEFAULT_PROMPT_TEMPLATE`），单一数据源彻底消除两端不同步。改动文件：`config.rs`、`prompt.rs`、`commands/config_cmd.rs`、`main.rs`、`api.ts`、`Settings.vue`。）
+
+2026-06-30（**翻译 prompt 可配置化**：写死在 `translate/prompt.rs` 的 LLM 翻译 prompt 改为可在设置页编辑的配置项。新增 `TranslateConfig.prompt_template`（顶层，所有 LLM 类 Provider 共用；DeepL/Microsoft 是专用 MT 不受影响），占位符 `{{source}}`/`{{target}}`/`{{input}}` 双花括号（避免与用户原文里的花括号冲突，Jinja2/mustache 惯例），渲染用 `str::replace` 不引模板引擎。**单一数据源**：`prompt.rs::DEFAULT_PROMPT_TEMPLATE` 常量同时供 `config.rs` 默认值和前端「恢复默认」按钮引用（前端 `Settings.vue` 手动对齐文案）。**容错兜底**：用户模板若漏掉 `{{input}}`，渲染时自动追加原文，防模型拿不到源文本瞎编。`render_translate_prompt` 签名从 `(req)` 改为 `(req, template)`；`OpenAiCompatProvider` 加 `prompt_template` 字段经 `build_provider` 透传。改动文件：`config.rs`、`translate/prompt.rs`、`translate/openai_compat.rs`、`translate/mod.rs`、`api.ts`、`Settings.vue`。）
+
+2026-06-30（**DeepSeek 翻译改造**：① 模型不再硬编码——`DeepSeekConfig.model` 默认空串，设置页填 Key 后调新命令 `list_deepseek_models`（`GET {base_url}/models`）动态拉取模型 id 填下拉，下拉可手输兼容第三方端点；空 model 翻译时报错"请先选择模型"。② 新增思考模式配置 `reasoning_enabled`（默认 false，翻译简单场景官方建议关）+ `reasoning_effort`（high/max）。请求体组合：关→`thinking:{type:"disabled"}`；开→`thinking:{type:"enabled"}`+`reasoning_effort`。删旧默认 `deepseek-chat` + 过时注释。⚠️ **DeepSeek API 唯一依据为中文官方文档 `api-docs.deepseek.com/zh-cn/`，英文版已过时**——见 DESIGN §4.3「DeepSeek API 事实基准」。改动文件：`config.rs`、`translate/openai_compat.rs`、`translate/mod.rs`、`src-tauri/commands/models.rs`、`src-tauri/main.rs`、`api.ts`、`Settings.vue`。）
 
 2026-06-30（**框选→结果窗流程重构**：旧 `select_region` 是一个干完全部（裁剪→OCR→翻译→配对→写历史→缓存结果）的大命令，框选抬起后选区窗卡在"识别中…"几秒才一次性弹带译文的窗口。拆成三层命令 `crop_region`/`recognize_region`/`translate_region`：抬起仅跑 `crop_region`（几十 ms）即开结果窗显示原图→"正在识别"→图上原位显示原文→"正在翻译"→替换为译文。删 `select_region`/`get_last_result`/`state.last_result`/`SelectResult`/`run_ocr_translate`/`OcrTranslateOutcome`；核心管线拆为 `run_ocr`+`run_translate` 两纯函数（集成测试相应改写）。新增 `state.last_crop`（裁剪图路径+图）+`last_ocr`（OCR 行）两接力缓存，沿用现有"后端缓存+前端主动拉取"反竞态模式，不引入事件。前端 `api.ts`/`Capture.vue`/`Result.vue` 三件套同步重构。）
 
@@ -121,20 +131,21 @@ pub enum CoreError {
 
 | 文件 | 职责 | 关键 API | 依赖 |
 |---|---|---|---|
-| `mod.rs` | `TranslationProvider` trait + `common_pairs` + 工厂 | `trait TranslationProvider`, `build_provider` | `types`, `config`, `error`, `async-trait` |
-| `prompt.rs` | LLM prompt 模板渲染 | `render_translate_prompt` | `types` |
+| `mod.rs` | `TranslationProvider` trait + `common_pairs` + 工厂 + 重试判定 | `trait TranslationProvider`, `build_provider`, `is_retryable(&CoreError)`, `RETRY_BASE_MS` | `types`, `config`, `error`, `async-trait` |
+| `prompt.rs` | LLM prompt 模板渲染 | `DEFAULT_PROMPT_TEMPLATE` 常量（单一数据源）、`default_prompt_template()`（命令层取值入口）、`render_translate_prompt(req, template)` | `types` |
 | `openai_compat.rs` | OpenAI 兼容（DeepSeek 走此路） | `OpenAiCompatProvider` | `reqwest`, `serde_json` |
 | `deepl.rs` | DeepL REST API | `DeepLProvider` | `reqwest` |
 | `microsoft.rs` 🟢 | Azure Translator（DU-18） | `MicrosoftProvider` | `reqwest` |
 | `baidu.rs` 🔴 P2 | 百度翻译（含 sign MD5，无 key 验证，推迟） | — | — |
 | `postprocess.rs` 🟢 | 译文后处理（去引号 / trim / 去前缀） | `clean_translation` | — |
-| `fallback.rs` 🟢 | Provider 故障转移包装器（主失败切备用） | `FallbackProvider` | Provider trait |
+| `fallback.rs` 🟡 | Provider 故障转移包装器（主失败切备用）—— ⚠️ **仅自测，`build_provider` 未构造，`fallback_order` 字段仍死代码，待接线** | `FallbackProvider` | Provider trait |
 
 **关键事实**（DU-05 落地）：
 - **DeepSeek 模型不硬编码**：`DeepSeekConfig.model` 默认空串，设置页填 Key 后动态拉取（`GET /v1/models`，命令 `list_deepseek_models`）+ 可手输。空 model 翻译时报错"请先选择模型"。
 - **DeepSeek 思考模式**：`reasoning_enabled`（默认 false）+ `reasoning_effort`（high/max）。关→`thinking:{type:"disabled"}`；开→`thinking:{type:"enabled"}`+`reasoning_effort`。**DeepSeek API 唯一依据为中文官方文档**（见 DESIGN §4.3「DeepSeek API 事实基准」）。
 - Provider 构造时拿共享 `reqwest::Client`（CONVENTIONS §3.6），不每次 new。
 - 超时：LLM 30s / MT 10s；错误归类 `TranslateError`（Timeout / Api{status,body} / Parse / Request）。
+- **重试**（2026-06-30 接线）：三个 Provider 各有内联重试循环，按 `max_retries`（默认 2）指数退避（`RETRY_BASE_MS=500ms` × `2^attempt`）。`is_retryable` 判定：重试 Timeout/Request/5xx/429，不重试其他 4xx/Parse/UnsupportedPair。各 Provider 把单次 HTTP 逻辑抽成私有 `do_once`，`translate()` 包重试循环调它。
 
 ### src/history/ 🟢
 
@@ -148,7 +159,7 @@ pub enum CoreError {
 | `migrations/V001__initial.sql` | 初始迁移脚本 | 资源文件（include_str） | — |
 | `migrations/V002__image_and_lines.sql` | 加 `screenshot_png`/`ocr_lines_json`/`line_translations_json` | 资源文件（include_str） | — |
 
-**约定**：连接池 size 5，读写均 `spawn_blocking`。`insert`/`list`/`search`/`stats`/`delete_before`/`delete_by_id`/`clear_all`/`cleanup`/`get_screenshot` 已实现（DU-06 + DU-15）。`get_screenshot(id)` 按 id 精确查单列 `screenshot_png`，供历史面板详情取图（取代旧 `list(10000)` 全表拉 BLOB——既丢图又慢）。清理（retention_days + max_records）由 Orchestrator 启动时调 `cleanup_blocking`。
+**约定**：连接池 size 5，读写均 `spawn_blocking`。`insert`/`list`/`search`/`stats`/`delete_before`/`delete_by_id`/`clear_all`/`cleanup`/`get_screenshot` 已实现（DU-06 + DU-15）。`get_screenshot(id)` 按 id 精确查单列 `screenshot_png`，供历史面板详情取图（取代旧 `list(10000)` 全表拉 BLOB——既丢图又慢）。清理（retention_days + max_records）由 `state.rs::AppState::build` 在构造 history 后按 `config.history.auto_clean_on_start` 调一次 `cleanup_blocking`（2026-06-30 接线，此前为死代码）。
 
 > ⚠️ 列索引陷阱：`dao::row_to_record` 用位置索引读列，`ocr_lines_json`(18)/`line_translations_json`(19) 紧跟 `screenshot_png`(17, BLOB)。曾因索引错位（误读 17/18）导致任何带截图的记录 `list` 时 BLOB→String 类型不符而崩溃——已修，并有 `list_reads_back_v002_fields_when_populated` 回归测试。
 
@@ -190,14 +201,14 @@ Tauri 应用后端。命令层包装 `snaptext-core` 的 Provider，系统集成
 
 ### src/state.rs 🟢
 
-`AppState`（`app.manage` 注入，命令用 `State<'_, AppState>` 取用）。持有 `Arc<dyn CaptureProvider>`、`Arc<dyn OcrProvider>`、`Mutex<Option<Arc<dyn TranslationProvider>>>`、`Arc<dyn HistoryStore>`、`Mutex<Config>`、`reqwest::Client`、`Mutex<Vec<CapturedFrame>>`（截图缓存）、`Mutex<Option<LastCrop>>`（裁剪缓存，三层命令接力）、`Mutex<Option<LastOcr>>`（OCR 缓存，三层命令接力）。**取代旧 Orchestrator 的 Provider 持有角色**——Tauri 命令直接读 state 调 Provider，无 channel。`captured`/`last_crop`/`last_ocr` 三套缓存都是反竞态模式：先写后端，子窗口 `onMounted` 主动命令拉取（Pinia 不跨窗口共享，emit 事件会因子窗口未加载完而丢失）。
+`AppState`（`app.manage` 注入，命令用 `State<'_, AppState>` 取用）。持有 `Arc<dyn CaptureProvider>`、`Arc<dyn OcrProvider>`、`Mutex<Option<Arc<dyn TranslationProvider>>>`、`Arc<dyn HistoryStore>`、`Mutex<Config>`、`reqwest::Client`、`Mutex<Vec<CapturedFrame>>`（截图缓存）、`Mutex<Option<LastCrop>>`（裁剪缓存，三层命令接力）、`Mutex<Option<LastOcr>>`（OCR 缓存，三层命令接力）。**取代旧 Orchestrator 的 Provider 持有角色**——Tauri 命令直接读 state 调 Provider，无 channel。`captured`/`last_crop`/`last_ocr` 三套缓存都是反竞态模式：先写后端，子窗口 `onMounted` 主动命令拉取（Pinia 不跨窗口共享，emit 事件会因子窗口未加载完而丢失）。`build()` 构造完 history 后，按 `config.history.auto_clean_on_start` 启动时调一次 `cleanup_blocking`（retention_days + max_records）。
 
 ### src/commands/ 🟢
 
 | 文件 | 命令 | 包装的 core API |
 |---|---|---|
 | `mod.rs` | 模块导出 | — |
-| `config_cmd.rs` | `get_config` / `save_config`（写盘+重建 Provider+重注册热键）/ `check_translate_ready` | `Config::load/save`、`build_provider` |
+| `config_cmd.rs` | `get_config` / `save_config`（写盘+重建 Provider+重注册热键）/ `check_translate_ready` / `get_default_prompt`（返回 `prompt.rs::DEFAULT_PROMPT_TEMPLATE` 供前端只读展示，单一数据源） | `Config::load/save`、`build_provider`、`translate::prompt::default_prompt_template` |
 | `models.rs` | `models_ready` / `download_models`（后台线程+专用 runtime，进度经 `download-progress` 事件推送）/ `list_deepseek_models`（GET `{base_url}/models` 拉取 DeepSeek 模型 id 列表，供设置页下拉） | `model_manager::is_models_ready`、`downloader::download_models`、`reqwest`（list_deepseek_models 直接发 HTTP） |
 | `capture.rs` | `capture_all`（截全屏+缓存帧+写临时 BMP+返回 `MonitorDto`）/ `get_last_capture`（重建 DTO）/ `save_image_copy`（复制结果图到目标路径） | `CaptureProvider::capture_all` |
 | `ocr_translate.rs` | `crop_region`（裁剪缓存帧+写临时 PNG+缓存进 `last_crop`+返回路径）/ `recognize_region`（从 `last_crop` 取图 OCR+`align` 前的原文清洗+缓存进 `last_ocr`+返回 OCR 行与整段原文）/ `translate_region`（从 `last_ocr` 取原文翻译+`align_lines` 配对+写历史+返回逐行译文/整段译文/Provider/耗时）；核心管线抽成纯函数 `run_ocr`+`run_translate`（不依赖 Tauri，便于 mock 测试） | `OcrProvider::recognize`、`TranslationProvider::translate`、`HistoryStore::insert` |
@@ -235,7 +246,7 @@ Tauri 应用后端。命令层包装 `snaptext-core` 的 Provider，系统集成
 | `views/Home.vue` | 主窗口首页：状态卡（模型/翻译就绪态）+ 截图/设置/历史入口 |
 | `views/Settings.vue` | 设置面板：8 分类（通用/快捷键/截图/OCR/翻译/界面/历史/关于），草稿机制保存 |
 | `views/History.vue` | 历史面板：左列表 + 右详情（截图 base64 + 原文/译文）+ 搜索/刷新/单删/清空 |
-| `views/Capture.vue` | 选区窗口：全屏 Canvas 显示截图 + 鼠标拖拽框选 + 抬起调 `crop_region`（仅裁剪+写临时图）即创建结果窗口、关闭选区窗 |
+| `views/Capture.vue` | 选区窗口：全屏 Canvas 显示截图 + 鼠标拖拽框选 + 抬起调 `crop_region`（仅裁剪+写临时图）即创建结果窗口、关闭选区窗。**窗口以 hidden 创建，首次 `draw()` 画上截图 + 双层 rAF 等合成后再 `show()`，消除创建→绘制间的白闪** |
 | `views/Result.vue` | 结果窗口：原图→"正在识别"→原位显示原文→"正在翻译"→原位替换译文，两阶段渲染；工具栏（原文/译文切换、复制、保存、关闭）|
 | `stores/config.ts` | 配置 Pinia（load/save） |
 > 注：原 `stores/capture.ts` 已删除——选区结果跨窗口传递改走后端缓存 + 命令拉取（Pinia 不跨窗口共享，见 `state.rs`）。

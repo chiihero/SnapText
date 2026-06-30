@@ -16,10 +16,19 @@ const primary = ref<MonitorDto | null>(null);
 const img = new Image();
 const dragStart = ref<{ x: number; y: number } | null>(null);
 const dragCur = ref<{ x: number; y: number } | null>(null);
+// 选区蒙版不透明度（读 config.ui.overlay_dim_alpha，默认 0.5）。
+const overlayAlpha = ref(0.5);
+// 窗口以 hidden 创建（window.rs），首次画上截图后 show() 才可见，消除白闪。
+// flag 保证只 show 一次（draw() 还会被拖拽反复调用）。
+const firstDrawn = ref(false);
 
 onMounted(async () => {
   // 主动拉取 Rust 端已缓存的截图（trigger_capture_cmd 先截图后开窗）。
   api.logDiag("capture_timing", "onMounted");
+  // 读蒙版不透明度配置（不阻塞截图加载，失败用默认）。
+  api.getConfig().then((cfg) => {
+    overlayAlpha.value = cfg.ui.overlay_dim_alpha ?? 0.5;
+  }).catch(() => {});
   try {
     const fetchStart = performance.now();
     const monitors = await api.getLastCapture();
@@ -120,6 +129,18 @@ function draw() {
   // 背景：截图按窗口尺寸拉伸（截图是物理像素，窗口是逻辑像素）。
   const scale = primary.value.scale || 1;
   ctx.drawImage(img, 0, 0, c.width, c.height);
+  // 首次画上截图后才显示窗口（消除创建→绘制间的白闪），只触发一次。
+  // 双层 rAF：drawImage 写 canvas 缓冲是同步的，但浏览器合成该帧到屏幕要等
+  // 下一渲染帧。若 show() 早于合成，WebView2 默认白底会露一帧 → 短暂白闪。
+  // 推迟 show 到两次 rAF 之后（约 +32ms），确保 canvas 帧已合成再显窗。
+  if (!firstDrawn.value) {
+    firstDrawn.value = true;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        getCurrentWindow().show().catch(() => {});
+      });
+    });
+  }
   // 蒙版 + 选区。
   if (dragStart.value && dragCur.value) {
     const a = dragStart.value;
@@ -130,7 +151,7 @@ function draw() {
       w: Math.abs(b.x - a.x),
       h: Math.abs(b.y - a.y),
     };
-    ctx.fillStyle = "rgba(0,0,0,0.4)";
+    ctx.fillStyle = `rgba(0,0,0,${overlayAlpha.value})`;
     // 四块蒙版。
     ctx.fillRect(0, 0, c.width, sel.y);
     ctx.fillRect(0, sel.y, sel.x, sel.h);
