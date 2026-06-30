@@ -29,6 +29,9 @@ const translateMs = ref(0);
 
 const canvas = ref<HTMLCanvasElement | null>(null);
 const img = new Image();
+// 离屏模糊原图缓存：img.onload 后渲染一次，draw() 每行贴对应 bbox 区块做"弱化背景"。
+// 微信截图翻译同款思路——文字区域用同位置模糊原图做底，自然融合不突兀（非纯白硬擦）。
+const blurredCanvas = document.createElement("canvas");
 const showAllOriginal = ref(false);
 const perLineOriginal = ref<boolean[]>([]);
 const fontSize = ref(14);
@@ -39,7 +42,10 @@ onMounted(async () => {
   try {
     const crop = await api.getLastCrop();
     shotPath.value = crop.shot_path;
-    img.onload = () => draw();
+    img.onload = () => {
+      renderBlurred();
+      draw();
+    };
     img.src = api.fileSrc(crop.shot_path);
   } catch (e) {
     message.error(`加载结果失败：${e}`);
@@ -91,6 +97,19 @@ onMounted(async () => {
 
 watch([showAllOriginal, perLineOriginal, ocrLines, translations, fontSize], () => draw(), { deep: true });
 
+// 渲染离屏模糊原图（只在 img 加载后做一次）。draw() 每行按 bbox 从这里取对应区块贴回主 canvas。
+function renderBlurred() {
+  if (!img.naturalWidth) return;
+  blurredCanvas.width = img.naturalWidth;
+  blurredCanvas.height = img.naturalHeight;
+  const ctx = blurredCanvas.getContext("2d")!;
+  // blur 半径按图宽自适应（小图轻模糊，大图略强），3px 是微信级柔化手感。
+  const r = Math.max(2, Math.round(img.naturalWidth / 400));
+  ctx.filter = `blur(${r}px)`;
+  ctx.drawImage(img, 0, 0);
+  ctx.filter = "none";
+}
+
 function draw() {
   const c = canvas.value;
   if (!c || !img.naturalWidth || ocrLines.value.length === 0) return;
@@ -109,8 +128,19 @@ function draw() {
     const text = showOrig || translations.value.length === 0
       ? line.text
       : translations.value[i] ?? "";
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(b.x, b.y, b.w, b.h);
+    // 背景：贴同位置模糊原图区块（弱化背景、不擦除），取代纯白硬擦。
+    if (blurredCanvas.width > 0) {
+      ctx.drawImage(
+        blurredCanvas,
+        b.x, b.y, b.w, b.h, // 源：模糊图同 bbox 区块
+        b.x, b.y, b.w, b.h, // 目标：主 canvas 原位置
+      );
+    }
+    // 文字：深色 + 半透明白描边，保证在任意模糊背景上都清晰（微信同款做法）。
+    ctx.lineJoin = "round";
+    ctx.lineWidth = Math.max(2, fontSize.value / 5);
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.strokeText(text, b.x + 2, b.y + b.h / 2, b.w - 4);
     ctx.fillStyle = "#1d2129";
     ctx.fillText(text, b.x + 2, b.y + b.h / 2, b.w - 4);
   });

@@ -29,6 +29,14 @@ const store = useConfigStore();
 const draft = reactive<Config>({} as Config);
 const activeTab = ref("translate");
 
+// 系统默认 prompt 模板——onMounted 时从后端 get_default_prompt 命令拉取
+// （单一数据源，前端零硬编码，避免与后端 DEFAULT_PROMPT_TEMPLATE 不同步）。
+const defaultPrompt = ref("");
+
+// 占位符说明——字面双花括号，放 script 里避免被 Vue 模板当插值解析。
+const PROMPT_PLACEHOLDER_HINT =
+  "可用占位符：{{source}} 源语言 · {{target}} 目标语言 · {{input}} 原文（缺失时自动追加兜底）。仅对 LLM 引擎生效。";
+
 const tabs: { key: string; label: string }[] = [
   { key: "general", label: "通用" },
   { key: "hotkey", label: "快捷键" },
@@ -76,9 +84,23 @@ async function refreshDeepseekModels() {
   }
 }
 
+// prompt 模式切换：切到"自定义"时若 prompt_template 为空则预填系统默认值作为编辑起点；
+// 切到"系统默认"时不清空 prompt_template（保留用户上次自定义，切回来不丢失）。
+function onPromptModeChange(useCustom: boolean) {
+  if (useCustom && !draft.translate.prompt_template && defaultPrompt.value) {
+    draft.translate.prompt_template = defaultPrompt.value;
+  }
+}
+
 onMounted(async () => {
   if (!store.config) await store.load();
   Object.assign(draft, JSON.parse(JSON.stringify(store.config)));
+  // 拉取系统默认 prompt（只读展示 + 切换预填用）。
+  try {
+    defaultPrompt.value = await api.getDefaultPrompt();
+  } catch (e) {
+    console.error("拉取默认 prompt 失败", e);
+  }
 });
 
 async function save() {
@@ -116,12 +138,9 @@ async function save() {
               <n-form-item label="触发截图">
                 <n-input v-model:value="draft.hotkey.trigger" placeholder="Ctrl+Alt+Q" />
               </n-form-item>
-              <n-form-item label="取消选区">
-                <n-input v-model:value="draft.hotkey.cancel" placeholder="Escape" />
-              </n-form-item>
             </n-form>
             <p style="color: var(--st-text-weak); font-size: 12px; margin: 0">
-              格式如 Ctrl+Alt+Q；保存后即时生效。档位切换需重启。
+              格式如 Ctrl+Alt+Q；保存后即时生效。选区中按 Esc 取消（固定）。档位切换需重启。
             </p>
           </n-card>
         </template>
@@ -232,6 +251,48 @@ async function save() {
                 </n-form-item>
               </template>
 
+              <n-form-item label="翻译提示词">
+                <div style="width: 100%">
+                  <n-radio-group
+                    :value="draft.translate.prompt_use_custom"
+                    @update:value="(v: boolean) => { draft.translate.prompt_use_custom = v; onPromptModeChange(v); }"
+                    style="margin-bottom: 8px"
+                  >
+                    <n-radio :value="false" label="系统默认（只读）" />
+                    <n-radio :value="true" label="自定义" />
+                  </n-radio-group>
+                  <n-input
+                    :value="draft.translate.prompt_use_custom
+                      ? draft.translate.prompt_template
+                      : defaultPrompt"
+                    :disabled="!draft.translate.prompt_use_custom"
+                    type="textarea"
+                    :rows="8"
+                    :placeholder="defaultPrompt"
+                    @update:value="(v: string) => { if (draft.translate.prompt_use_custom) draft.translate.prompt_template = v; }"
+                  />
+                  <div
+                    style="
+                      display: flex;
+                      justify-content: space-between;
+                      align-items: center;
+                      margin-top: 6px;
+                    "
+                  >
+                    <span style="color: var(--st-text-weak); font-size: 12px">
+                      {{ PROMPT_PLACEHOLDER_HINT }}
+                    </span>
+                    <n-button
+                      v-if="draft.translate.prompt_use_custom"
+                      size="small"
+                      @click="draft.translate.prompt_template = defaultPrompt"
+                    >
+                      重置为默认值
+                    </n-button>
+                  </div>
+                </div>
+              </n-form-item>
+
               <n-form-item label="译文后处理">
                 <n-switch v-model:value="draft.translate.postprocess" />
                 <span style="color: var(--st-text-weak); font-size: 12px; margin-left: 8px">
@@ -248,9 +309,6 @@ async function save() {
             <n-form label-placement="left" :label-width="160">
               <n-form-item label="自动复制译文">
                 <n-switch v-model:value="draft.ui.auto_copy_translation" />
-              </n-form-item>
-              <n-form-item label="点击行显示原文">
-                <n-switch v-model:value="draft.ui.show_original" />
               </n-form-item>
               <n-form-item label="图上翻译字号">
                 <n-slider v-model:value="draft.ui.card_font_size" :min="10" :max="24" :step="1" />

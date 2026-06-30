@@ -284,13 +284,29 @@ pub struct TranslateRequest {
 1. `OpenAiCompatProvider`（默认，含 DeepSeek）— 走 OpenAI 兼容 `/v1/chat/completions`
 2. `DeepLProvider` — 走 DeepL REST API
 
-**LLM 类 Provider 共用 prompt 模板**（`translate/prompt.rs`）：
-```
-Translate the following text from {source} to {target}.
-Output ONLY the translation. No explanations, no quotes, no notes.
+**LLM 类 Provider 共用 prompt 模板**（`translate/prompt.rs`，**双模式可配置**）：
 
-Text:
-{input}
+模板存于 `TranslateConfig.prompt_template`（顶层字段，DeepL/Microsoft 是专用 MT 不走 prompt，不受影响），通过 `TranslateConfig.prompt_use_custom` 切换两种模式：
+
+| 模式 | `prompt_use_custom` | UI | 渲染数据源 |
+|---|---|---|---|
+| 系统默认（默认） | `false` | 只读展示后端常量 | 后端固定常量 `DEFAULT_PROMPT_TEMPLATE`（**不读字段**） |
+| 自定义 | `true` | 可编辑 | `prompt_template` 字段 |
+
+**为什么默认模式不读字段而读常量**：这样后端升级默认 prompt 时，所有默认模式用户自动受益——修了"配置固化"（用户一旦保存过 `prompt_template` 就拿不到未来升级）的隐患。默认模式下 `prompt_template` 字段值不参与渲染，但仍随 config 持久化（保留用户上次自定义，切回自定义模式不丢失）。
+
+占位符用**双花括号** `{{source}}`/`{{target}}`/`{{input}}`——避免与用户原文里的 `{...}`（如 JSON/代码片段）冲突（Jinja2/mustache 惯例），渲染用 `str::replace` 不引模板引擎。
+
+- **单一数据源**：`prompt.rs::DEFAULT_PROMPT_TEMPLATE` 常量是唯一真值。`config.rs` 默认值引用它；前端设置页经新命令 `get_default_prompt()`（`commands/config_cmd.rs`）拉取同一常量做只读展示——**前端零硬编码**，彻底消除两端不同步。
+- **容错兜底**：用户模板若漏掉 `{{input}}`，渲染时自动在末尾追加原文，防模型拿不到源文本瞎编。
+- **默认值**（英文系统指令——LLM 对英文更稳、token 更省；含角色设定 + 输出约束 + 保留换行/标点风格）：
+```
+You are a precise translator. Translate the text below from {{source}} to {{target}}.
+- Output ONLY the translation.
+- No explanations, quotes, or prefixes.
+- Preserve line breaks and the original punctuation style.
+
+{{input}}
 ```
 
 **通用功能**：超时（LLM 30s，专用 MT 10s）+ 指数退避重试 2 次 + Token usage 解析。
@@ -373,6 +389,8 @@ CREATE INDEX idx_history_created ON translation_history(created_at DESC);
 ```
 
 迁移经 `PRAGMA user_version` 版本化（V001 建表、V002 加图像/行级字段），幂等。
+
+**启动清理**：`state.rs::AppState::build` 构造 history 后，若 `config.history.auto_clean_on_start` 为 true，调一次 `cleanup_blocking(retention_days, max_records)` 删除过期/超量记录（清理逻辑在 core `dao::cleanup` 已实现，2026-06-30 才接线到启动流程）。
 
 详见 `CODE_MAP.md` history 模块。
 

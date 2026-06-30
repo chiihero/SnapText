@@ -16,6 +16,8 @@ pub struct DeepLProvider {
     api_key: String,
     timeout: Duration,
     supported: Vec<LangPair>,
+    /// 失败重试次数（指数退避，仅重试可重试错误，见 `super::is_retryable`）。
+    max_retries: u32,
 }
 
 impl DeepLProvider {
@@ -24,6 +26,7 @@ impl DeepLProvider {
         base_url: String,
         timeout: Duration,
         client: reqwest::Client,
+        max_retries: u32,
     ) -> Self {
         Self {
             client,
@@ -31,6 +34,7 @@ impl DeepLProvider {
             api_key,
             timeout,
             supported: common_pairs(),
+            max_retries,
         }
     }
 }
@@ -65,6 +69,30 @@ impl TranslationProvider for DeepLProvider {
     }
 
     async fn translate(&self, req: TranslateRequest) -> Result<TranslateResponse, CoreError> {
+        // 重试循环：仅重试可重试错误（超时/网络/5xx/429），指数退避。
+        let mut last_err: Option<CoreError> = None;
+        for attempt in 0..=self.max_retries {
+            match self.do_once(&req).await {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    let retryable = super::is_retryable(&e);
+                    last_err = Some(e);
+                    if retryable && attempt < self.max_retries {
+                        let delay = Duration::from_millis(super::RETRY_BASE_MS * 2u64.pow(attempt));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+        Err(last_err.expect("重试循环至少执行一次，必有 last_err"))
+    }
+}
+
+impl DeepLProvider {
+    /// 单次翻译请求（不含重试）。translate() 在外层包重试循环调用本方法。
+    async fn do_once(&self, req: &TranslateRequest) -> Result<TranslateResponse, CoreError> {
         let target = deepl_code(req.target).ok_or_else(|| TranslateError::UnsupportedPair {
             src: req.source.to_string(),
             dst: req.target.to_string(),

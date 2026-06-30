@@ -30,15 +30,14 @@ export type ReasoningEffort = "high" | "max";
 // ===== Config（与 snaptext_core::config::Config 对齐）=====
 
 export interface Config {
-  general: { log_level: string; log_file: string | null; onboarding_completed: boolean };
-  hotkey: { trigger: string; cancel: string };
-  capture: { fallback_to_dxgi: boolean };
+  general: { log_level: string; log_file: string | null };
+  hotkey: { trigger: string };
+  capture: Record<string, never>;
   ocr: { tier: Tier; postprocess: boolean };
   translate: TranslateConfig;
   history: { retention_days: number; max_records: number; auto_clean_on_start: boolean };
   ui: {
     auto_copy_translation: boolean;
-    show_original: boolean;
     overlay_dim_alpha: number;
     card_font_size: number;
     minimize_to_tray_on_close: boolean;
@@ -61,6 +60,10 @@ export interface TranslateConfig {
   timeout_mt_secs: number;
   max_retries: number;
   postprocess: boolean;
+  /** LLM 翻译 prompt 模板，占位符 {{source}}/{{target}}/{{input}}。后端 TranslateConfig.prompt_template 对齐。 */
+  prompt_template: string;
+  /** 是否使用自定义 prompt。false=系统默认（渲染走后端常量）；true=用 prompt_template 字段。 */
+  prompt_use_custom: boolean;
   fallback_order: ProviderKind[];
 }
 
@@ -115,6 +118,8 @@ export const api = {
   getConfig: () => invoke<Config>("get_config"),
   saveConfig: (cfg: Config) => invoke<boolean>("save_config", { cfg }),
   checkTranslateReady: () => invoke<boolean>("check_translate_ready"),
+  // 系统默认翻译 prompt（设置页"系统默认"模式只读展示用，单一数据源取自后端常量）。
+  getDefaultPrompt: () => invoke<string>("get_default_prompt"),
   // DeepSeek 模型列表（设置页填 key 后拉取，GET {base_url}/models）。
   listDeepseekModels: (baseUrl: string, apiKey: string) =>
     invoke<string[]>("list_deepseek_models", { baseUrl, apiKey }),

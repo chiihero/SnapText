@@ -23,6 +23,10 @@ pub struct OpenAiCompatProvider {
     /// 思考模式开关（DeepSeek V3.2+ thinking 参数，见 DESIGN §4.3）。
     reasoning_enabled: bool,
     reasoning_effort: ReasoningEffort,
+    /// LLM 翻译 prompt 模板（占位符 `{{source}}`/`{{target}}`/`{{input}}`）。
+    prompt_template: String,
+    /// 失败重试次数（指数退避，仅重试可重试错误，见 `super::is_retryable`）。
+    max_retries: u32,
 }
 
 impl OpenAiCompatProvider {
@@ -35,6 +39,8 @@ impl OpenAiCompatProvider {
         client: reqwest::Client,
         reasoning_enabled: bool,
         reasoning_effort: ReasoningEffort,
+        prompt_template: String,
+        max_retries: u32,
     ) -> Self {
         Self {
             client,
@@ -46,6 +52,8 @@ impl OpenAiCompatProvider {
             supported: common_pairs(),
             reasoning_enabled,
             reasoning_effort,
+            prompt_template,
+            max_retries,
         }
     }
 }
@@ -92,7 +100,31 @@ impl TranslationProvider for OpenAiCompatProvider {
                 "请先在设置选择模型".into(),
             )));
         }
-        let prompt = render_translate_prompt(&req);
+        // 重试循环：仅重试可重试错误（超时/网络/5xx/429），指数退避。
+        let mut last_err: Option<CoreError> = None;
+        for attempt in 0..=self.max_retries {
+            match self.do_once(&req).await {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    let retryable = super::is_retryable(&e);
+                    last_err = Some(e);
+                    if retryable && attempt < self.max_retries {
+                        let delay = Duration::from_millis(super::RETRY_BASE_MS * 2u64.pow(attempt));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+        Err(last_err.expect("重试循环至少执行一次，必有 last_err"))
+    }
+}
+
+impl OpenAiCompatProvider {
+    /// 单次翻译请求（不含重试）。translate() 在外层包重试循环调用本方法。
+    async fn do_once(&self, req: &TranslateRequest) -> Result<TranslateResponse, CoreError> {
+        let prompt = render_translate_prompt(req, &self.prompt_template);
         // 思考模式参数（DESIGN §4.3 事实基准）：thinking 与 reasoning_effort 互斥。
         // 关 → thinking:disabled；开 → thinking:enabled + reasoning_effort。
         let mut body = serde_json::json!({
@@ -183,6 +215,8 @@ mod tests {
             reqwest::Client::new(),
             false,
             ReasoningEffort::High,
+            crate::translate::prompt::DEFAULT_PROMPT_TEMPLATE.to_string(),
+            2,
         );
         let req = TranslateRequest {
             text: "Hello, world.".into(),

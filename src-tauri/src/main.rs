@@ -45,11 +45,11 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // 日志初始化（tracing 双输出，搬自旧 logging.rs）。
-            init_logging()?;
-
-            // 加载配置（构造 AppState 时会再读一次，这里仅为热键/日志）。
+            // 加载配置（构造 AppState 时会再读一次，这里仅为日志/热键/模型）。
             let config = Config::load().unwrap_or_default();
+
+            // 日志初始化（按 config.general.log_level / log_file 配置，搬自旧 logging.rs）。
+            init_logging(&config)?;
 
             // 首启：确保 OCR 模型就绪（缺失则同步下载）。
             ensure_models(config.ocr.tier)?;
@@ -77,10 +77,25 @@ fn main() {
             tracing::info!("SnapText 启动完成");
             Ok(())
         })
+        .on_window_event(|window, event| {
+            // 主窗口关闭拦截：开启"最小化到托盘"时隐藏窗口而非退出（设置页开关）。
+            // 其他窗口（选区/结果/设置/历史）的 X 一律正常关闭，不拦截。
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    let state = window.app_handle().state::<crate::state::AppState>();
+                    let minimize = state.config.blocking_lock().ui.minimize_to_tray_on_close;
+                    if minimize {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::config_cmd::get_config,
             commands::config_cmd::save_config,
             commands::config_cmd::check_translate_ready,
+            commands::config_cmd::get_default_prompt,
             commands::models::models_ready,
             commands::models::download_models,
             commands::models::list_deepseek_models,
@@ -105,26 +120,37 @@ fn main() {
         .expect("启动 SnapText 失败");
 }
 
-/// tracing 双输出（stderr + %APPDATA%\SnapText\logs\snaptext.log），搬自旧 logging.rs。
-fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
+/// tracing 双输出（stderr + 日志文件），按 config 配置 level/file，搬自旧 logging.rs。
+fn init_logging(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    use std::path::PathBuf;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::{fmt, EnvFilter};
 
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // log_level：空或缺失回退 "info"（env 优先级最高）。
+    let level = if config.general.log_level.trim().is_empty() {
+        "info"
+    } else {
+        config.general.log_level.trim()
+    };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
     let stderr_layer = fmt::layer().with_writer(std::io::stderr);
 
-    // 文件输出（目录不可写时退化为仅 stderr）。
-    let log_dir = dirs::config_dir()
-        .map(|d| d.join("SnapText").join("logs"))
-        .ok_or("无法定位用户配置目录")?;
-    std::fs::create_dir_all(&log_dir)?;
+    // log_file：None 用默认 %APPDATA%\SnapText\logs\snaptext.log；Some 用自定义路径。
+    let log_path = match &config.general.log_file {
+        Some(p) if !p.trim().is_empty() => PathBuf::from(p),
+        _ => dirs::config_dir()
+            .map(|d| d.join("SnapText").join("logs").join("snaptext.log"))
+            .ok_or("无法定位用户配置目录")?,
+    };
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_dir.join("snaptext.log"))?;
+        .open(&log_path)?;
     let file_layer = fmt::layer().with_writer(file);
 
     tracing_subscriber::registry()

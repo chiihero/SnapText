@@ -64,6 +64,17 @@ impl AppState {
         };
         let history = Arc::new(SqliteHistoryStore::open_default()?);
 
+        // 启动清理：按配置删除过期/超量记录（清理逻辑在 core 已实现，此前未接线）。
+        // cleanup_blocking 是同步阻塞调用，但启动时跑一次且删除很快，可接受。
+        if config.history.auto_clean_on_start {
+            if let Err(e) = history.cleanup_blocking(
+                config.history.retention_days,
+                config.history.max_records,
+            ) {
+                tracing::warn!(error = %e, "启动历史清理失败");
+            }
+        }
+
         Ok(Self {
             capture,
             ocr,

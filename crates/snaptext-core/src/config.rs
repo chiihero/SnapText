@@ -103,8 +103,6 @@ pub struct GeneralConfig {
     pub log_level: String,
     /// 自定义日志文件路径；`None` 用默认 `%APPDATA%\SnapText\logs\snaptext.log`。
     pub log_file: Option<String>,
-    /// 首次启动引导是否已完成；未完成时启动自动弹出引导页（`ui/onboarding.rs`）。
-    pub onboarding_completed: bool,
 }
 
 impl Default for GeneralConfig {
@@ -112,7 +110,6 @@ impl Default for GeneralConfig {
         Self {
             log_level: "info".to_string(),
             log_file: None,
-            onboarding_completed: false,
         }
     }
 }
@@ -123,34 +120,20 @@ impl Default for GeneralConfig {
 pub struct HotkeyConfig {
     /// 触发截图的热键。
     pub trigger: String,
-    /// 取消选区的热键。
-    pub cancel: String,
 }
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             trigger: "Ctrl+Alt+Q".to_string(),
-            cancel: "Escape".to_string(),
         }
     }
 }
 
-/// 截图段。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 截图段（当前无字段，保留结构供未来扩展；DXGI 回退为无条件默认行为，不暴露开关）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct CaptureConfig {
-    /// WGC 捕获失败时是否回退到 DXGI Desktop Duplication（DU-02）。
-    pub fallback_to_dxgi: bool,
-}
-
-impl Default for CaptureConfig {
-    fn default() -> Self {
-        Self {
-            fallback_to_dxgi: true,
-        }
-    }
-}
+pub struct CaptureConfig {}
 
 /// OCR 档位（medium 精度优先 / small 速度优先）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,6 +281,16 @@ pub struct TranslateConfig {
     pub max_retries: u32,
     /// 是否启用译文后处理（DU-16）。
     pub postprocess: bool,
+    /// LLM 翻译 prompt 模板（OpenAI 兼容 Provider 共用）。
+    /// 占位符 `{{source}}`/`{{target}}`/`{{input}}`，渲染见 `translate::prompt`。
+    /// 默认见 `translate::prompt::DEFAULT_PROMPT_TEMPLATE`（与设置页"恢复默认"同源）。
+    ///
+    /// 仅当 `prompt_use_custom = true` 时生效；为 false 时渲染走后端固定常量，
+    /// 这样后端升级默认 prompt 能让所有默认模式用户自动受益（不读本字段）。
+    pub prompt_template: String,
+    /// 是否使用自定义 prompt 模板。false（默认）= 系统默认（只读展示，渲染走常量）；
+    /// true = 用 `prompt_template` 字段渲染。
+    pub prompt_use_custom: bool,
     /// 故障转移顺序（P2 DU-17）。
     pub fallback_order: Vec<ProviderKind>,
 }
@@ -314,6 +307,8 @@ impl Default for TranslateConfig {
             timeout_mt_secs: 10,
             max_retries: 2,
             postprocess: true,
+            prompt_template: crate::translate::prompt::DEFAULT_PROMPT_TEMPLATE.to_string(),
+            prompt_use_custom: false,
             fallback_order: vec![ProviderKind::DeepSeek, ProviderKind::DeepL],
         }
     }
@@ -347,8 +342,6 @@ impl Default for HistoryConfig {
 pub struct UiConfig {
     /// 翻译完成后是否自动复制译文到剪贴板。
     pub auto_copy_translation: bool,
-    /// 悬浮卡片是否显示原文。
-    pub show_original: bool,
     /// 选区蒙版不透明度（0.0 ~ 1.0）。
     pub overlay_dim_alpha: f32,
     /// 悬浮卡片字体大小（pt）。
@@ -361,7 +354,6 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             auto_copy_translation: true,
-            show_original: true,
             overlay_dim_alpha: 0.5,
             card_font_size: 14.0,
             minimize_to_tray_on_close: true,
@@ -389,14 +381,12 @@ mod tests {
         // 空 TOML → 全部默认值（#[serde(default)] 生效）。
         let cfg = parse("").unwrap();
         assert_eq!(cfg.hotkey.trigger, "Ctrl+Alt+Q");
-        assert_eq!(cfg.hotkey.cancel, "Escape");
         assert_eq!(cfg.ocr.tier, Tier::Medium);
         assert_eq!(cfg.translate.provider, ProviderKind::DeepSeek);
         assert_eq!(cfg.translate.target_lang, Lang::Zh);
         assert_eq!(cfg.translate.timeout_llm_secs, 30);
         assert_eq!(cfg.ui.overlay_dim_alpha, 0.5);
         assert!(cfg.history.auto_clean_on_start);
-        assert!(!cfg.general.onboarding_completed);
     }
 
     #[test]
@@ -413,7 +403,6 @@ trigger = "Ctrl+Alt+E"
         assert!(!cfg.ocr.postprocess);
         assert_eq!(cfg.hotkey.trigger, "Ctrl+Alt+E");
         // 未覆盖项仍为默认
-        assert_eq!(cfg.hotkey.cancel, "Escape");
         assert_eq!(cfg.translate.provider, ProviderKind::DeepSeek);
     }
 

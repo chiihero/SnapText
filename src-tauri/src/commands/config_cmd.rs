@@ -56,3 +56,11 @@ pub async fn save_config(
 pub async fn check_translate_ready(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(state.translate.lock().await.is_some())
 }
+
+/// 返回系统默认翻译 prompt 模板（前端设置页"系统默认"模式只读展示用）。
+/// 单一数据源：直接取自 `snaptext_core::translate::prompt::DEFAULT_PROMPT_TEMPLATE`，
+/// 前端零硬编码，避免两端不同步。
+#[tauri::command]
+pub fn get_default_prompt() -> String {
+    snaptext_core::translate::prompt::default_prompt_template().to_string()
+}
