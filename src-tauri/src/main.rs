@@ -121,13 +121,30 @@ fn main() {
             let app_state = state::AppState::build(client)?;
             app.manage(app_state);
 
-            // 注册全局热键（默认 Ctrl+Alt+Q；阶段 4 从 config 读取）。
+            // 注册全局热键：失败不阻断启动（可能被其他程序占用），降级为状态供前端提示。
             let hotkey_str = config.hotkey.trigger.clone();
             let shortcut: Shortcut = hotkey_str
                 .parse()
                 .unwrap_or_else(|_| "Ctrl+Alt+Q".parse().unwrap());
-            app.global_shortcut().register(shortcut)?;
-            tracing::info!(hotkey = %hotkey_str, "全局热键已注册");
+            let hotkey_error = match app.global_shortcut().register(shortcut) {
+                Ok(()) => {
+                    tracing::info!(hotkey = %hotkey_str, "全局热键已注册");
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        hotkey = %hotkey_str,
+                        "全局热键注册失败（可能被占用），降级运行"
+                    );
+                    Some(format!(
+                        "热键「{hotkey_str}」注册失败：{e}（可能被其他程序占用，请前往设置更换快捷键）"
+                    ))
+                }
+            };
+            *app.state::<crate::state::AppState>()
+                .hotkey_error
+                .blocking_lock() = hotkey_error;
 
             // 托盘：显示主窗口 / 设置 / 历史 / 退出。
             window::build_tray(app.handle())?;
@@ -158,6 +175,7 @@ fn main() {
             commands::config_cmd::save_config,
             commands::config_cmd::check_translate_ready,
             commands::config_cmd::get_default_prompt,
+            commands::config_cmd::get_hotkey_status,
             commands::models::models_ready,
             commands::models::download_models,
             commands::models::list_deepseek_models,

@@ -6,6 +6,8 @@ export const useConfigStore = defineStore("config", {
   state: () => ({
     config: null as Config | null,
     translateReady: false,
+    // 全局热键注册状态：null=已注册；非空字符串=注册失败（被占用等）。
+    hotkeyError: null as string | null,
     loading: true,
   }),
   actions: {
@@ -14,6 +16,7 @@ export const useConfigStore = defineStore("config", {
       try {
         this.config = await api.getConfig();
         this.translateReady = await api.checkTranslateReady();
+        this.hotkeyError = await api.getHotkeyStatus().catch(() => null);
       } finally {
         this.loading = false;
       }
@@ -23,6 +26,8 @@ export const useConfigStore = defineStore("config", {
       const ready = await api.saveConfig(draft);
       this.config = draft;
       this.translateReady = ready;
+      // save_config 重注册热键后刷新状态（成功→null，失败→错误文案）。
+      this.hotkeyError = await api.getHotkeyStatus().catch(() => null);
       return ready;
     },
   },

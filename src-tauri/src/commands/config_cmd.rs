@@ -35,18 +35,36 @@ pub async fn save_config(
     *state.translate.lock().await = new_translate;
     *state.config.lock().await = cfg.clone();
 
-    // 重注册热键：先注销全部，再注册新的。
+    // 重注册热键：先注销全部，再注册新的。结果写回 hotkey_error 供前端即时感知。
     let gs = app.global_shortcut();
     let _ = gs.unregister_all();
-    if let Ok(sc) = cfg.hotkey.trigger.parse::<Shortcut>() {
-        if let Err(e) = gs.register(sc) {
-            tracing::warn!(error = %e, hotkey = %cfg.hotkey.trigger, "重注册热键失败，保留空热键");
-        } else {
-            tracing::info!(hotkey = %cfg.hotkey.trigger, "热键已更新");
+    let new_err = if let Ok(sc) = cfg.hotkey.trigger.parse::<Shortcut>() {
+        match gs.register(sc) {
+            Ok(()) => {
+                tracing::info!(hotkey = %cfg.hotkey.trigger, "热键已更新");
+                None
+            }
+            Err(e) => {
+                let msg = format!(
+                    "热键「{trigger}」注册失败：{e}（可能被其他程序占用，请更换快捷键）",
+                    trigger = cfg.hotkey.trigger
+                );
+                tracing::warn!(error = %e, hotkey = %cfg.hotkey.trigger, "重注册热键失败，保留空热键");
+                Some(msg)
+            }
         }
-    }
+    } else {
+        None
+    };
+    *state.hotkey_error.lock().await = new_err;
 
     Ok(ready)
+}
+
+/// 全局热键注册状态：None=已注册；Some(msg)=注册失败（被占用等），前端用于提示。
+#[tauri::command]
+pub async fn get_hotkey_status(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    Ok(state.hotkey_error.lock().await.clone())
 }
 
 /// 当前翻译是否可用（缺 Key 则 false）。

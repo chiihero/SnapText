@@ -356,6 +356,8 @@ pub enum Event {
 
 **翻译降级与即时生效**：`Orchestrator.translate` 为 `Option<Arc<dyn TranslationProvider>>`——启动时缺 API Key 则为 `None`（翻译时回 `Error` 提示去设置，不阻塞截图/OCR/设置面板）。设置面板/引导页保存后发 `UpdateTranslateConfig`，Orchestrator 调 `build_provider` 即时重建（无需重启）；`UpdateTargetLang` 即时切目标语言。
 
+**热键注册降级（同款哲学）**：全局热键注册失败（典型：上一次进程残留未释放热键、或被其他软件占用）不阻断启动——`main.rs::setup` 注册失败时写入 `AppState.hotkey_error` 并继续，前端经 `get_hotkey_status` 拉取后在 Home 弹一次性引导 + Settings 快捷键卡片标红，用户改键保存后 `save_config` 重注册成功即清空状态。与翻译降级同款"缺资源不崩、降级运行 + UI 提示引导修复"模式，也沿用 `captured`/`last_crop`/`last_ocr` 的"后端缓存状态 + 前端主动拉取"反竞态（不引入 Tauri 事件，因子窗口 Pinia 不共享、emit 可能丢失）。
+
 **译文图上原位覆盖 + 行级配对**：OCR 行带 bbox 经 `Event::OcrDone(Vec<OcrLine>)` 一路传到 UI。整段翻译后，译文按 `\n` 切分与 OCR 行按 index 配对（`align_lines`：译文行多于原文并入末行、少于原文补空）。UI 层 `result_overlay` 全屏置顶，以选区裁剪图为背景，在每个 OCR 行 bbox 位置（换算：`选区屏内偏移 + bbox.xy/scale`）擦白后绘制该行译文——即微信截图翻译式原位覆盖。同一份数据（截图 PNG + ocr_lines + line_translations）写历史库供回看。
 ```
 

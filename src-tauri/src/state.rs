@@ -31,6 +31,9 @@ pub struct AppState {
     pub last_crop: Mutex<Option<LastCrop>>,
     /// 三层命令接力缓存：recognize_region 写入，translate_region 读取翻译。
     pub last_ocr: Mutex<Option<LastOcr>>,
+    /// 全局热键注册状态：None=已注册成功；Some(msg)=注册失败（被其他程序占用等）。
+    /// 启动注册或 save_config 重注册时写入，前端经 get_hotkey_status 拉取并提示。
+    pub hotkey_error: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -84,6 +87,7 @@ impl AppState {
             captured: Mutex::new(Vec::new()),
             last_crop: Mutex::new(None),
             last_ocr: Mutex::new(None),
+            hotkey_error: Mutex::new(None),
         })
     }
 }

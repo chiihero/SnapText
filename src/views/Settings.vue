@@ -18,6 +18,7 @@ import {
   NButton,
   NSpace,
   NCard,
+  NAlert,
   useMessage,
   type MenuOption,
 } from "naive-ui";
@@ -148,6 +149,14 @@ async function save() {
                 <n-input v-model:value="draft.hotkey.trigger" placeholder="Ctrl+Alt+Q" />
               </n-form-item>
             </n-form>
+            <n-alert
+              v-if="store.hotkeyError"
+              type="error"
+              :show-icon="true"
+              style="margin-bottom: 8px"
+            >
+              {{ store.hotkeyError }}
+            </n-alert>
             <p style="color: var(--st-text-weak); font-size: 12px; margin: 0">
               格式如 Ctrl+Alt+Q；保存后即时生效。选区中按 Esc 取消（固定）。档位切换需重启。
             </p>

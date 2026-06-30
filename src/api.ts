@@ -127,6 +127,8 @@ export const api = {
   checkTranslateReady: () => invoke<boolean>("check_translate_ready"),
   // 系统默认翻译 prompt（设置页"系统默认"模式只读展示用，单一数据源取自后端常量）。
   getDefaultPrompt: () => invoke<string>("get_default_prompt"),
+  // 全局热键注册状态：null=已注册；非空字符串=注册失败（被占用等），前端用于提示。
+  getHotkeyStatus: () => invoke<string | null>("get_hotkey_status"),
   // DeepSeek 模型列表（设置页填 key 后拉取，GET {base_url}/models）。
   listDeepseekModels: (baseUrl: string, apiKey: string) =>
     invoke<string[]>("list_deepseek_models", { baseUrl, apiKey }),

@@ -15,6 +15,10 @@ const opening = ref(false);
 onMounted(async () => {
   await store.load();
   modelsReady.value = await api.modelsReady(store.config?.ocr.tier ?? "medium").catch(() => false);
+  // 热键注册失败（被其他程序占用等）：一次性引导用户去设置修改。
+  if (store.hotkeyError) {
+    message.warning("全局热键注册失败，可能被其他程序占用，请前往设置修改");
+  }
 });
 
 async function openSettings() {
