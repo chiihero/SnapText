@@ -49,6 +49,9 @@ fn main() {
                                 responder.respond(
                                     Response::builder()
                                         .header("Content-Type", "image/bmp")
+                                        // shot:// URL 按 monitor id 固定，无此头 WebView2
+                                        // 会命中缓存显示旧截图。前端另加 ?t= 时间戳双保险。
+                                        .header("Cache-Control", "no-store")
                                         .body(body)
                                         .unwrap(),
                                 );

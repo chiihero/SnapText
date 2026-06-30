@@ -80,7 +80,9 @@ function loadAndDraw(monitors: MonitorDto[]) {
     draw();
   };
   // shot_path 已是 shot:// URI（http://shot.localhost/<id>），直接当 src，从内存取 BMP。
-  img.src = primary.value.shot_path;
+  // 加时间戳 query：URL 每次唯一，强制绕过 WebView2 HTTP 缓存——否则同一 monitor id
+  // 的 shot:// URL 恒定，第二次起直接命中缓存显示旧截图（后端 state.captured 已是新帧）。
+  img.src = `${primary.value.shot_path}?t=${Date.now()}`;
 }
 
 function pos(ev: MouseEvent): { x: number; y: number } {
