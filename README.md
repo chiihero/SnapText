@@ -75,6 +75,7 @@ docs/                   设计文档（CODE_MAP / DESIGN / TASKS / PROGRESS）
 
 - [`docs/CODE_MAP.md`](docs/CODE_MAP.md)：文件路径 ↔ 职责 ↔ 依赖映射
 - [`docs/DESIGN.md`](docs/DESIGN.md)：核心模块设计与技术选型
+- [`docs/RELEASE.md`](docs/RELEASE.md)：发布到 GitHub Release 的操作手册
 - 开发规范见 [`AGENTS.md`](AGENTS.md)
 
 ## License

@@ -62,7 +62,7 @@ SnapText/
 ├── AGENTS.md                   🔒 项目规范（人工维护）
 ├── .github/workflows/          🟢 CI（release.yml：push tag 触发云端打包发布）
 ├── .gitignore                  🟢（含 node_modules/dist/src-tauri）
-├── docs/                       本文档目录
+├── docs/                       本文档目录（含 RELEASE.md 发布手册）
 ├── crates/
 │   └── snaptext-core/          🟢 库 crate（纯逻辑层，100% 复用）
 ├── src-tauri/                  🟢 Tauri 2 二进制（Rust 后端：命令层 + 系统集成）
