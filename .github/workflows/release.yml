@@ -1,0 +1,46 @@
+# 自动发布工作流：push 形如 v* 的 tag 即触发
+# 云端编译 Tauri 2 应用，产出 NSIS(.exe) + MSI 安装包并发布到 GitHub Release
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: # 允许手动触发，便于首次调试
+
+permissions:
+  contents: write # 创建 Release 必需
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: 'npm'
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo 编译产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+
+      - name: 构建并发布
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'SnapText v__VERSION__'
+          releaseBody: '详见 docs/CHANGELOG.md'
+          releaseDraft: false
+          prerelease: false

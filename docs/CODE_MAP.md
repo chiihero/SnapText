@@ -60,6 +60,7 @@ SnapText/
 ├── README.md                   🟡 骨架
 ├── LICENSE                     🟢 MIT
 ├── AGENTS.md                   🔒 项目规范（人工维护）
+├── .github/workflows/          🟢 CI（release.yml：push tag 触发云端打包发布）
 ├── .gitignore                  🟢（含 node_modules/dist/src-tauri）
 ├── docs/                       本文档目录
 ├── crates/
@@ -292,6 +293,16 @@ Tauri 应用后端。命令层包装 `snaptext-core` 的 Provider，系统集成
 | `stress-test.ps1` | 稳定性压测（模拟热键 + 鼠标，连续框选） | DU-12 验收 |
 
 > 已删（2026-06-29 迁移 Tauri 时清理）：`build-msi.ps1`（改用 Tauri NSIS/MSI bundler）、`mirror-models.ps1`、`verify-deps.ps1`。
+
+---
+
+## .github/workflows/
+
+| 文件 | 用途 |
+|---|---|
+| `release.yml` | 发布工作流。`push` 形如 `v*` 的 tag（或手动 `workflow_dispatch`）→ `windows-latest` runner 上 `npm ci` + Rust stable + `tauri-apps/tauri-action@v0` 云端打包，自动产出 NSIS(`*-setup.exe`) + MSI 并创建 GitHub Release。需 `permissions: contents: write`。 |
+
+> **为什么不本地发版**：本地 `scripts/build.bat` 也能出包，但 CI 化后发版只需 `git tag vX.Y.Z && git push origin vX.Y.Z`，长期复用、可追溯、未来易扩展跨平台 target。
 
 ---
 

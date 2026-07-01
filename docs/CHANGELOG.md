@@ -2,6 +2,17 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/) 格式。
 
+## [0.1.0] — 2026-07-01 · 首个 GitHub Release
+
+P0 首个可用版本，由 `tauri-apps/tauri-action` 在 `windows-latest` runner 上自动构建。
+触发方式：`git tag v0.1.0` → push tag → CI 产出 NSIS `*-setup.exe` + MSI 并自动发布到 Release。
+
+### 发布物
+- `SnapText_0.1.0_x64-setup.exe`（NSIS 安装器，推荐）
+- `SnapText_0.1.0_x64_en-US.msi`（MSI 安装包）
+
+> 功能与改进清单继承自下列 [Unreleased] 段落。
+
 ## [Unreleased] — P0 首个可用版本
 
 ### 新增

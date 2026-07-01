@@ -40,6 +40,17 @@ npm run tauri build
 
 安装包输出到 `src-tauri/target/release/bundle/`（NSIS + MSI）。
 
+### 发布到 GitHub Release
+
+推送形如 `v*` 的 tag 即触发云端自动构建并发布（见 `.github/workflows/release.yml`）：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+CI 在 `windows-latest` 上编译，自动产出 `*-setup.exe` + `*.msi` 到 Release。构建约 10–20 分钟，可在 Actions 页查看日志。
+
 ### 其他脚本
 
 - `scripts/reset-onboarding.bat`：重置引导标志（保留 Key 和模型，仅让引导页下次重新出现）
