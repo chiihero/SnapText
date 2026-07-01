@@ -45,7 +45,7 @@
 ## ✨ 功能特性
 
 - ⌨️ **快捷键驱动** — 默认 `Ctrl+Alt+Q` 一键触发截图，全程不离开键盘
-- 🔒 **本地 OCR** — PaddleOCR 最新一代 **PP-OCRv6**（ONNX 推理），对屏幕文字、中英混排识别准确；离线运行，数据不出本机
+- 🔒 **本地 OCR** — PaddleOCR 最新一代 **PP-OCRv6**（ONNX 推理）。官方 benchmark：检测 Hmean **86.2%** / 识别 **83.2%**，较上代 PP-OCRv5 提升 **+4.6% / +5.1%**；单模型覆盖 50 种语言，对屏幕文字与中英混排识别准确。离线运行，数据不出本机
 - 🌐 **多翻译后端** — DeepL / DeepSeek / Microsoft，OpenAI 兼容协议
 - 📝 **译文原位覆盖** — 识别后译文直接叠加回原图选区，所见即所得
 - 🗂️ **历史记录** — SQLite 本地存储，按原图 / 译文 / 时间检索过往翻译
@@ -125,6 +125,13 @@ docs/                   设计文档（CODE_MAP / DESIGN / TASKS / PROGRESS / RE
 - [`docs/DESIGN.md`](docs/DESIGN.md) — 核模块设计与技术选型
 - [`docs/RELEASE.md`](docs/RELEASE.md) — 发布到 GitHub Release 操作手册
 - [`AGENTS.md`](AGENTS.md) — 开发规范
+
+## 🔗 参考
+
+- [PaddlePaddle / PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) — OCR 引擎上游
+- [PP-OCRv6 官方文档与 benchmark](https://paddlepaddle.github.io/PaddleOCR/main/version3.x/algorithm/PP-OCRv6/PP-OCRv6.html)
+- [PP-OCRv6 技术报告（arXiv）](https://arxiv.org/html/2606.13108v1)
+- [PP-OCRv6_medium_rec_onnx（ModelScope）](https://www.modelscope.cn/models/PaddlePaddle/PP-OCRv6_medium_rec_onnx/summary)
 
 ## License
 
