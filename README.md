@@ -2,7 +2,7 @@
 
 # SnapText
 
-**截图 OCR + 翻译 · 本地优先 · 快捷键驱动**
+**截图 OCR + 翻译 · 本地优先 · 快捷键驱动 · PaddleOCR PP-OCRv6**
 
 框选屏幕区域 → 本地 OCR 识别 → 调用翻译 API → 译文图上原位覆盖
 
@@ -45,7 +45,7 @@
 ## ✨ 功能特性
 
 - ⌨️ **快捷键驱动** — 默认 `Ctrl+Alt+Q` 一键触发截图，全程不离开键盘
-- 🔒 **本地 OCR** — PaddleOCR PP-OCRv6（ONNX 推理），离线运行，数据不出本机
+- 🔒 **本地 OCR** — PaddleOCR 最新一代 **PP-OCRv6**（ONNX 推理），对屏幕文字、中英混排识别准确；离线运行，数据不出本机
 - 🌐 **多翻译后端** — DeepL / DeepSeek / Microsoft，OpenAI 兼容协议
 - 📝 **译文原位覆盖** — 识别后译文直接叠加回原图选区，所见即所得
 - 🗂️ **历史记录** — SQLite 本地存储，按原图 / 译文 / 时间检索过往翻译
@@ -97,13 +97,7 @@ npm run tauri build        # 或双击 scripts/build.bat
 
 安装包输出到 `src-tauri/target/release/bundle/`（NSIS）。
 
-### 发布到 GitHub Release
 
-```bash
-git tag vX.Y.Z && git push origin vX.Y.Z    # 触发 CI 自动构建发布
-```
-
-CI 在 `windows-latest` 上编译，自动产出 `*-setup.exe` 到 Release（约 10–20 分钟）。完整发版流程见 [`docs/RELEASE.md`](docs/RELEASE.md)。
 
 ### 其他脚本
 
