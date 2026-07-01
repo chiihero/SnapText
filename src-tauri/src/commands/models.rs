@@ -77,7 +77,10 @@ pub async fn download_models(
             &client,
             &[],
             move |role, received, total| {
-                let _ = tx_for_cb.blocking_send(ProgressMsg::Step {
+                // 进度回调运行在 tokio async 上下文内，不能用 blocking_send（会 panic：
+                // "Cannot block the current thread from within a runtime"）。
+                // try_send 非阻塞，channel 满时丢弃进度（前端按最新值渲染，丢几帧无影响）。
+                let _ = tx_for_cb.try_send(ProgressMsg::Step {
                     role: role.to_string(),
                     received,
                     total,

@@ -107,6 +107,10 @@ pub struct GeneralConfig {
     pub auto_ocr: bool,
     /// OCR 完成后是否自动跑翻译。关闭则在结果窗手动点"译文"触发。
     pub auto_translate: bool,
+    /// 首启引导是否完成。false → 启动进引导页（Onboarding.vue），用户走完后
+    /// `complete_onboarding` 命令置 true。中途关闭/崩溃/下载失败都仍为 false，
+    /// 保证下次重进引导页（单标志位即可，不记步骤进度）。
+    pub onboarding_completed: bool,
 }
 
 impl Default for GeneralConfig {
@@ -116,6 +120,7 @@ impl Default for GeneralConfig {
             log_file: None,
             auto_ocr: false,
             auto_translate: false,
+            onboarding_completed: false,
         }
     }
 }
@@ -390,6 +395,8 @@ mod tests {
         assert_eq!(cfg.translate.timeout_llm_secs, 30);
         assert_eq!(cfg.ui.overlay_dim_alpha, 0.5);
         assert!(cfg.history.auto_clean_on_start);
+        // onboarding_completed 默认 false（首启进引导页）。
+        assert!(!cfg.general.onboarding_completed);
     }
 
     #[test]

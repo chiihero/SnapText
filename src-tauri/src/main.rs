@@ -11,7 +11,6 @@ mod window;
 
 use std::time::Duration;
 
-use snaptext_core::config::Tier;
 use snaptext_core::Config;
 use tauri::http::{Response, StatusCode};
 use tauri::Manager;
@@ -112,9 +111,6 @@ fn main() {
             // 日志初始化（按 config.general.log_level / log_file 配置，搬自旧 logging.rs）。
             init_logging(&config)?;
 
-            // 首启：确保 OCR 模型就绪（缺失则同步下载）。
-            ensure_models(config.ocr.tier)?;
-
             // 共享 HTTP 客户端。
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
@@ -179,6 +175,8 @@ fn main() {
             commands::config_cmd::check_translate_ready,
             commands::config_cmd::get_default_prompt,
             commands::config_cmd::get_hotkey_status,
+            commands::config_cmd::complete_onboarding,
+            commands::config_cmd::reload_ocr_provider,
             commands::models::models_ready,
             commands::models::download_models,
             commands::models::list_deepseek_models,
@@ -241,26 +239,5 @@ fn init_logging(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
         .with(stderr_layer)
         .with(file_layer)
         .try_init()?;
-    Ok(())
-}
-
-/// 首启确保模型就绪（缺失则同步下载，搬自旧 first_run.rs）。
-fn ensure_models(tier: Tier) -> Result<(), Box<dyn std::error::Error>> {
-    if snaptext_core::model_manager::is_models_ready(tier) {
-        return Ok(());
-    }
-    tracing::info!(?tier, "模型缺失，开始下载...");
-    let rt = tokio::runtime::Runtime::new()?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()?;
-    rt.block_on(snaptext_core::model_manager::downloader::download_models(
-        tier,
-        &client,
-        &[],
-        |role, received, total| {
-            eprintln!("[模型下载] {role}: {received} bytes (total={total:?})");
-        },
-    ))?;
     Ok(())
 }

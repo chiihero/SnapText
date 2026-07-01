@@ -5,6 +5,7 @@ import { createRouter, createWebHashHistory, type RouteRecordRaw } from "vue-rou
 const routes: RouteRecordRaw[] = [
   { path: "/", redirect: "/home" },
   { path: "/home", component: () => import("./views/Home.vue") },
+  { path: "/onboarding", component: () => import("./views/Onboarding.vue") },
   { path: "/settings", component: () => import("./views/Settings.vue") },
   { path: "/history", component: () => import("./views/History.vue") },
   { path: "/capture", component: () => import("./views/Capture.vue") },

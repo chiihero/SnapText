@@ -18,7 +18,8 @@ use crate::commands::ocr_translate::{LastCrop, LastOcr};
 /// 全局应用状态，经 `app.manage()` 注入，命令用 `State<'_, AppState>` 取用。
 pub struct AppState {
     pub capture: Arc<dyn CaptureProvider>,
-    pub ocr: Arc<dyn OcrProvider>,
+    /// OCR Provider；模型缺失时为 None（启动不崩，引导页/设置页下载后 reload_ocr_provider 重建）。
+    pub ocr: Mutex<Option<Arc<dyn OcrProvider>>>,
     /// 翻译 Provider；缺 API Key 时为 None（设置保存后 rebuild）。
     pub translate: Mutex<Option<Arc<dyn TranslationProvider>>>,
     pub history: Arc<dyn HistoryStore>,
@@ -47,11 +48,19 @@ impl AppState {
 
         let tier = config.ocr.tier;
         let capture = Arc::new(WindowsCaptureProvider::new());
-        let ocr = Arc::new(PaddleOcrProvider::new(
+        // OCR 模型缺失时降级为 None（启动不崩），与翻译降级同款哲学。
+        // 用户在引导页/设置页下载后调 reload_ocr_provider 命令重建。
+        let ocr: Option<Arc<dyn OcrProvider>> = match PaddleOcrProvider::new(
             snaptext_core::model_manager::det_model_path(tier)?,
             snaptext_core::model_manager::rec_model_path(tier)?,
             snaptext_core::model_manager::dict_path(tier)?,
-        )?);
+        ) {
+            Ok(p) => Some(Arc::new(p)),
+            Err(e) => {
+                tracing::warn!(error = %e, "OCR Provider 构造失败（模型缺失？），已降级（请下载模型）");
+                None
+            }
+        };
         let translate: Option<Arc<dyn TranslationProvider>> = match build_provider(
             &config.translate,
             &client,
@@ -79,7 +88,7 @@ impl AppState {
 
         Ok(Self {
             capture,
-            ocr,
+            ocr: Mutex::new(ocr),
             translate: Mutex::new(translate),
             history,
             config: Mutex::new(config),

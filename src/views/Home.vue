@@ -2,6 +2,7 @@
 // 主窗口首页：状态卡 + 操作入口（截图/设置/历史）。
 // 设置/历史开新窗口（独立 OS 窗口），截图走热键（也提供按钮提示）。
 import { onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 import { NCard, NButton, NSpace, NTag, useMessage } from "naive-ui";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { api } from "../api";
@@ -9,11 +10,17 @@ import { useConfigStore } from "../stores/config";
 
 const message = useMessage();
 const store = useConfigStore();
+const router = useRouter();
 const modelsReady = ref(false);
 const opening = ref(false);
 
 onMounted(async () => {
   await store.load();
+  // 首启引导未完成 → 跳引导页（单标志位保证：中途关闭/崩溃仍 false → 下次重进）。
+  if (store.config?.general.onboarding_completed === false) {
+    router.replace("/onboarding");
+    return;
+  }
   modelsReady.value = await api.modelsReady(store.config?.ocr.tier ?? "medium").catch(() => false);
   // 热键注册失败（被其他程序占用等）：一次性引导用户去设置修改。
   if (store.hotkeyError) {

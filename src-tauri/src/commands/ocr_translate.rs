@@ -120,7 +120,13 @@ pub async fn recognize_region(state: State<'_, AppState>) -> Result<OcrResult, S
         (last.image.clone(), last.monitor_id.clone(), last.bbox)
     };
     let cfg = state.config.lock().await.clone();
-    let ocr_lines = run_ocr(&image, state.ocr.as_ref(), &cfg).await?;
+    let ocr = state
+        .ocr
+        .lock()
+        .await
+        .clone()
+        .ok_or_else(|| "OCR 模型未就绪，请先在引导页或设置页下载模型".to_string())?;
+    let ocr_lines = run_ocr(&image, ocr.as_ref(), &cfg).await?;
     let original: String = ocr_lines
         .iter()
         .map(|l| l.text.as_str())

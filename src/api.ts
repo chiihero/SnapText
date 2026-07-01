@@ -37,6 +37,8 @@ export interface Config {
     auto_ocr: boolean;
     /** OCR 完成后是否自动翻译；关闭则结果窗手动点"译文"触发。 */
     auto_translate: boolean;
+    /** 首启引导是否完成。后端 GeneralConfig.onboarding_completed 对齐。 */
+    onboarding_completed: boolean;
   };
   hotkey: { trigger: string };
   capture: Record<string, never>;
@@ -128,6 +130,10 @@ export const api = {
   getDefaultPrompt: () => invoke<string>("get_default_prompt"),
   // 全局热键注册状态：null=已注册；非空字符串=注册失败（被占用等），前端用于提示。
   getHotkeyStatus: () => invoke<string | null>("get_hotkey_status"),
+  // 标记首启引导完成（置 onboarding_completed=true 并落盘）。
+  completeOnboarding: () => invoke<void>("complete_onboarding"),
+  // 重建 OCR Provider（模型下载完成后调用，即时生效无需重启）。
+  reloadOcrProvider: () => invoke<void>("reload_ocr_provider"),
   // DeepSeek 模型列表（设置页填 key 后拉取，GET {base_url}/models）。
   listDeepseekModels: (baseUrl: string, apiKey: string) =>
     invoke<string[]>("list_deepseek_models", { baseUrl, apiKey }),

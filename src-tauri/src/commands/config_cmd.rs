@@ -1,5 +1,6 @@
 //! 配置命令：读取 / 保存配置，保存后即时重建翻译 Provider + 重注册热键。
 
+use snaptext_core::ocr::{OcrProvider, PaddleOcrProvider};
 use snaptext_core::translate::{build_provider, TranslationProvider};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
@@ -79,4 +80,36 @@ pub async fn check_translate_ready(state: State<'_, AppState>) -> Result<bool, S
 #[tauri::command]
 pub fn get_default_prompt() -> String {
     snaptext_core::translate::prompt::default_prompt_template().to_string()
+}
+
+/// 标记首启引导完成：把内存中的 config.general.onboarding_completed 置 true 并落盘。
+///
+/// 不复用 `save_config`——引导页的配置草稿已在调用本命令前由 `save_config` 落盘，
+/// 此处仅置标志位，无需重建 Provider / 重注册热键。
+#[tauri::command]
+pub async fn complete_onboarding(state: State<'_, AppState>) -> Result<(), String> {
+    let mut cfg = state.config.lock().await.clone();
+    cfg.general.onboarding_completed = true;
+    cfg.save().map_err(|e| format!("保存配置失败：{e}"))?;
+    *state.config.lock().await = cfg;
+    Ok(())
+}
+
+/// 重建 OCR Provider（模型缺失降级为 None 后，下载完模型调此命令即时生效，无需重启）。
+///
+/// 用当前 config.ocr.tier 构造；模型仍缺失则返回中文错误（不写入 state，保持原 None）。
+#[tauri::command]
+pub async fn reload_ocr_provider(state: State<'_, AppState>) -> Result<(), String> {
+    let tier = state.config.lock().await.ocr.tier;
+    let ocr: Arc<dyn OcrProvider> = Arc::new(
+        PaddleOcrProvider::new(
+            snaptext_core::model_manager::det_model_path(tier).map_err(|e| e.to_string())?,
+            snaptext_core::model_manager::rec_model_path(tier).map_err(|e| e.to_string())?,
+            snaptext_core::model_manager::dict_path(tier).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("OCR 模型加载失败：{e}"))?,
+    );
+    *state.ocr.lock().await = Some(ocr);
+    tracing::info!(?tier, "OCR Provider 已重建");
+    Ok(())
 }
