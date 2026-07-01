@@ -2,7 +2,15 @@
 
 > 给 AI 用：快速定位"改 X 看哪里"、"动 A 影响哪些 B"、"哪些文件禁止碰"。
 
-最后更新：2026-07-01（**项目级清理第 1 批（删除垃圾 + 死代码）**：① 删运行时垃圾 `smiley-tmp.zip`（405KB，gitignore 已忽略）+ `app1.log`（未跟踪）。② 删 `CLAUDE.md`——与 `AGENTS.md` 逐字相同（diff 确认），重复文件维护必分裂，CODE_MAP/DESIGN 均引用 `AGENTS.md` 为主。③ 删 `types.rs` 的 `AppState` enum（Idle/Selecting/Recognizing/Translating/Showing 5 变体）——egui 状态机遗留，grep 全工作区 **0 消费方**，Tauri 架构下窗口各自管理状态不用集中状态机。④ 同步删 CODE_MAP types.rs 表格的 `AppState` 行。**验证**：fmt + clippy -D warnings（0 警告）+ test（65 通过 0 失败）。）
+最后更新：2026-07-01（**文档补强：三目录命名溯源**：用户反馈 `crates`/`src`/`src-tauri` 三个目录"看起来奇怪"。经调研确认三者名字分别绑定 Vite（`src/` 默认前端入口）、Tauri CLI（`src-tauri/` 强约定，CLI 靠它定位后端项目）、Cargo workspace（`crates/` 社区惯例，crate 分组目录），改名得不偿失且偏离 create-tauri-app 主流模板。决定不改目录，改为在 §顶层结构补命名脚注消解困惑。`src` 与 `src-tauri` 视觉撞名是所有 Tauri 项目的固有特征，靠"前端=TS / 后端=Rust"语言差异区分。改动文件：`docs/CODE_MAP.md`、`README.md`。）
+
+2026-07-01（**项目级清理第 2 批（脚本归整 + 文档完善）**：根目录散落的中文脚本归入 `scripts/` 并改英文名——`开发.bat`→`scripts/dev.bat`、`打包.bat`→`scripts/build.bat`、`重置引导.bat`→`scripts/reset-onboarding.bat`（消除中文文件名在 git/shell 的编码隐患，与既有 `scripts/*.ps1` 统一约定）。三个 bat 的 `cd /d "%~dp0"` 改为 `cd /d "%~dp0.."`（脚本已移入 `scripts/` 子目录，须切到上一级项目根才能找到 `package.json`/`node_modules` 跑 `npm run tauri`）。`reset-onboarding.bat` 内对 `kai-fa.bat` 的提示引用改为 `scripts\dev.bat`。`.gitignore` 删历史遗留 `smiley-tmp.zip`（与项目无关）。`README.md` 从一行扩为工程文档（技术栈/环境/启动/结构/文档索引）。CODE_MAP `scripts/` 表同步补三行。**验证**：grep 确认无 `kai-fa`/中文 bat 残留引用；三个 bat 的 cd 行已改为项目根。）
+
+2026-07-01（**首启引导页**：原 `main.rs::setup` 的 `ensure_models` 在启动时同步后台下载 OCR 模型，用户无感知且不可选；前端虽有 `download_models` 命令封装但**零调用方**（事件 `download-progress`/`download-done` 无人监听）。改为引导页主动触发：① 删 `main.rs` 的 `ensure_models` 函数及其调用（启动不再下模型，秒进主界面）；② 新增 `GeneralConfig.onboarding_completed: bool`（默认 false）作单标志位——仅用户走完引导（完成/跳过）调 `complete_onboarding` 命令才置 true，中途关闭/崩溃/下载失败仍为 false → 下次重进引导页。引导页不记步骤进度（断点续传属过度设计），配置末尾统一 `save_config` 一次（避免分步多次触发后端重注册热键副作用）。③ 新增 `complete_onboarding` 命令（`config_cmd.rs`，只置标志+落盘，不复用 `save_config` 因语义不同——不重建 Provider/不重注册热键）。④ 前端新增 `Onboarding.vue`（三步向导：快捷键→下载模型→翻译配置），复用 Settings.vue 的草稿机制（深拷贝+统一保存）+ Provider UI 片段；下载步监听 `download-progress`（按 det/rec/dict 三段权重 33/47/20 折算进度）/`download-done`，`onBeforeUnmount` 清理 unlisten 句柄（Capture.vue 缺这步但它是常驻窗口，引导页可销毁必须清理）。⑤ `Home.vue` onMounted 判断 `onboarding_completed===false` 则 `router.replace('/onboarding')`。模型下载幂等：进步先 `is_models_ready()` 检查，已就绪跳过；未就绪重下整个（不续传，文件不大）。**为什么单标志位不记步骤**：模型幂等检查 + 配置末尾保存已让重进体验够好，再记步骤是过度设计。**为什么引导页放主窗口内**（路由而非独立窗口）：首启场景单一，改动最简，复用现有路由+窗口。改动文件：`crates/snaptext-core/src/config.rs`、`src-tauri/src/main.rs`、`src-tauri/src/commands/config_cmd.rs`、`src/api.ts`、`src/router.ts`、`src/views/{Home,Onboarding}.vue`。**验证**：fmt + clippy -D warnings（0 警告）+ test（46 通过 0 失败）+ vue-tsc（0 错误）。）
+
+2026-07-01（**OCR Provider 降级（修复首启引导引入的启动崩溃）**：删除 `main.rs::ensure_models`（启动同步下载）后，`AppState::build` 的 `PaddleOcrProvider::new(...)?` 在模型缺失时 panic 阻断启动。改为与翻译降级同款哲学：`state.ocr` 字段从 `Arc<dyn OcrProvider>` 改为 `Mutex<Option<Arc<dyn OcrProvider>>>`，`build` 里 `match PaddleOcrProvider::new` 失败→`None` 不崩（仅 warn）。消费点仅 `recognize_region` 一处，取 `state.ocr.lock().await.clone()` 为 None 时返回中文错误"OCR 模型未就绪，请先下载模型"。新增命令 `reload_ocr_provider`（`config_cmd.rs`）：用当前 `config.ocr.tier` 构造 PaddleOcrProvider 写回 `state.ocr`，引导页 `download-done` 成功后调它即时生效（无需重启）。**为什么不沿用 `save_config`**：reload 只动 OCR 不动翻译/热键，语义独立。**与现有降级体系一致**：翻译（缺 Key→None）、热键（占用→降级运行+提示）、OCR（缺模型→None）三者同构，都是"缺资源不崩、UI 引导修复"。改动文件：`src-tauri/src/{state.rs,main.rs}`、`src-tauri/src/commands/{config_cmd.rs,ocr_translate.rs}`、`src/api.ts`、`src/views/Onboarding.vue`。**验证**：fmt + clippy -D warnings（0 警告）+ test（46 通过 0 失败）+ vue-tsc（0 错误）。
+
+2026-07-01（**项目级清理第 1 批（删除垃圾 + 死代码）**：① 删运行时垃圾 `smiley-tmp.zip`（405KB，gitignore 已忽略）+ `app1.log`（未跟踪）。② 删 `CLAUDE.md`——与 `AGENTS.md` 逐字相同（diff 确认），重复文件维护必分裂，CODE_MAP/DESIGN 均引用 `AGENTS.md` 为主。③ 删 `types.rs` 的 `AppState` enum（Idle/Selecting/Recognizing/Translating/Showing 5 变体）——egui 状态机遗留，grep 全工作区 **0 消费方**，Tauri 架构下窗口各自管理状态不用集中状态机。④ 同步删 CODE_MAP types.rs 表格的 `AppState` 行。**验证**：fmt + clippy -D warnings（0 警告）+ test（65 通过 0 失败）。）
 
 2026-07-01（**删除 fallback 死代码**：`translate/fallback.rs`（`FallbackProvider`）实现完整但 `build_provider` 从不构造，`config.fallback_order` 字段无任何消费方——属提前写好的半成品（DU-17 故障转移），接线需联动 `is_retryable` + 多 Provider 嵌套构造，工作量属新功能开发而非清理。决定删除以求代码库零死代码，将来 DU-17 重新实现。删除：`fallback.rs` 整文件 + `translate/mod.rs` 的 `pub mod fallback` + `TranslateConfig.fallback_order` 字段（含 Default）+ `api.ts` 的 `fallback_order` 类型字段。旧 config.toml 残留 `fallback_order` 被 `#[serde(default)]` 忽略，平滑。**验证**：clippy -D warnings（0 警告）+ test（46 通过 0 失败）+ vue-tsc（0 错误）。改动文件：`crates/snaptext-core/src/translate/{fallback.rs 删,mod.rs}`、`crates/snaptext-core/src/config.rs`、`src/api.ts`。）
 
@@ -59,6 +67,11 @@ SnapText/
 ├── src-tauri/                  🟢 Tauri 2 二进制（Rust 后端：命令层 + 系统集成）
 └── src/                        🟢 Vue 3 前端（Naive UI）
 ```
+
+> **为什么有三个 src 开头的目录**：名字分别来自三个工具链的约定，非项目自定义——
+> `src/`（Vite 默认前端入口）、`src-tauri/`（Tauri CLI 强约定，CLI 靠它定位后端项目）、
+> `crates/snaptext-core/`（Cargo workspace 惯例，crate 分组目录）。
+> `src` 与 `src-tauri` 视觉撞名是所有 Tauri 项目的固有特征，靠"前端=TS / 后端=Rust"语言差异区分。
 
 
 ---
@@ -193,7 +206,7 @@ pub enum CoreError {
 路径解析：`%APPDATA%\SnapText\config.toml`（用 `dirs::config_dir()`）。
 热重载：用 `notify` crate 监听文件变更（P2 评估）。
 
-**首次引导 / 目标语言**：`GeneralConfig.onboarding_completed`（引导是否完成，未完成则启动弹 `ui/onboarding.rs`）；`TranslateConfig.target_lang`（翻译目标语言，源语言固定 `Auto`）。
+**首次引导 / 目标语言**：`GeneralConfig.onboarding_completed`（首启引导是否完成，false→启动 `router.replace('/onboarding')` 进引导页；用户走完引导调 `complete_onboarding` 置 true）；`TranslateConfig.target_lang`（翻译目标语言，源语言固定 `Auto`）。
 
 ---
 
@@ -205,19 +218,19 @@ Tauri 应用后端。命令层包装 `snaptext-core` 的 Provider，系统集成
 
 `tauri::Builder` 入口。职责：
 1. 注册插件（single-instance / global-shortcut / clipboard-manager / dialog）
-2. `setup`：初始化 tracing → ensure_models（首启下载）→ 构造共享 `reqwest::Client` → `AppState::build` → `manage` → 注册全局热键 → 构建托盘
+2. `setup`：初始化 tracing → 构造共享 `reqwest::Client` → `AppState::build` → `manage` → 注册全局热键 → 构建托盘（模型下载已移至前端引导页主动触发，不再在启动时同步下载）
 3. `invoke_handler`：注册全部 `#[tauri::command]`
 
 ### src/state.rs 🟢
 
-`AppState`（`app.manage` 注入，命令用 `State<'_, AppState>` 取用）。持有 `Arc<dyn CaptureProvider>`、`Arc<dyn OcrProvider>`、`Mutex<Option<Arc<dyn TranslationProvider>>>`、`Arc<dyn HistoryStore>`、`Mutex<Config>`、`reqwest::Client`、`Mutex<Vec<CapturedFrame>>`（截图缓存）、`Mutex<Option<LastCrop>>`（裁剪缓存，三层命令接力）、`Mutex<Option<LastOcr>>`（OCR 缓存，三层命令接力）、`Mutex<Option<String>>`（`hotkey_error`，热键注册状态）。**取代旧 Orchestrator 的 Provider 持有角色**——Tauri 命令直接读 state 调 Provider，无 channel。`captured`/`last_crop`/`last_ocr` 三套缓存都是反竞态模式：先写后端，子窗口 `onMounted` 主动命令拉取（Pinia 不跨窗口共享，emit 事件会因子窗口未加载完而丢失）。`hotkey_error` 同款反竞态：启动注册或 save_config 重注册时写入，前端经 `get_hotkey_status` 拉取提示（详见 main.rs 热键降级）。`build()` 构造完 history 后，按 `config.history.auto_clean_on_start` 启动时调一次 `cleanup_blocking`（retention_days + max_records）。
+`AppState`（`app.manage` 注入，命令用 `State<'_, AppState>` 取用）。持有 `Arc<dyn CaptureProvider>`、`Mutex<Option<Arc<dyn OcrProvider>>>`（模型缺失降级 None，下载后 `reload_ocr_provider` 重建）、`Mutex<Option<Arc<dyn TranslationProvider>>>`、`Arc<dyn HistoryStore>`、`Mutex<Config>`、`reqwest::Client`、`Mutex<Vec<CapturedFrame>>`（截图缓存）、`Mutex<Option<LastCrop>>`（裁剪缓存，三层命令接力）、`Mutex<Option<LastOcr>>`（OCR 缓存，三层命令接力）、`Mutex<Option<String>>`（`hotkey_error`，热键注册状态）。**取代旧 Orchestrator 的 Provider 持有角色**——Tauri 命令直接读 state 调 Provider，无 channel。`captured`/`last_crop`/`last_ocr` 三套缓存都是反竞态模式：先写后端，子窗口 `onMounted` 主动命令拉取（Pinia 不跨窗口共享，emit 事件会因子窗口未加载完而丢失）。`hotkey_error` 同款反竞态：启动注册或 save_config 重注册时写入，前端经 `get_hotkey_status` 拉取提示（详见 main.rs 热键降级）。`build()` 里 OCR/翻译 Provider 模型/Key 缺失均降级 None（不崩），构建完 history 后按 `config.history.auto_clean_on_start` 启动时调一次 `cleanup_blocking`（retention_days + max_records）。
 
 ### src/commands/ 🟢
 
 | 文件 | 命令 | 包装的 core API |
 |---|---|---|
 | `mod.rs` | 模块导出 | — |
-| `config_cmd.rs` | `get_config` / `save_config`（写盘+重建 Provider+重注册热键，结果写回 `hotkey_error`）/ `check_translate_ready` / `get_default_prompt`（返回 `prompt.rs::DEFAULT_PROMPT_TEMPLATE` 供前端只读展示，单一数据源）/ `get_hotkey_status`（返回热键注册状态 `Option<String>`，None=成功/Some=失败原因，前端用于提示） | `Config::load/save`、`build_provider`、`translate::prompt::default_prompt_template` |
+| `config_cmd.rs` | `get_config` / `save_config`（写盘+重建翻译 Provider+重注册热键，结果写回 `hotkey_error`）/ `check_translate_ready` / `get_default_prompt`（返回 `prompt.rs::DEFAULT_PROMPT_TEMPLATE` 供前端只读展示，单一数据源）/ `get_hotkey_status`（返回热键注册状态 `Option<String>`，None=成功/Some=失败原因，前端用于提示）/ `complete_onboarding`（置 `config.general.onboarding_completed=true` 并落盘，不复用 `save_config`——只置标志，不重建 Provider/不重注册热键）/ `reload_ocr_provider`（用当前 tier 重建 OCR Provider 写回 `state.ocr`，模型下载完成后即时生效无需重启；启动时模型缺失降级为 None） | `Config::load/save`、`build_provider`、`PaddleOcrProvider::new`、`translate::prompt::default_prompt_template` |
 | `models.rs` | `models_ready` / `download_models`（后台线程+专用 runtime，进度经 `download-progress` 事件推送）/ `list_deepseek_models`（GET `{base_url}/models` 拉取 DeepSeek 模型 id 列表，供设置页下拉） | `model_manager::is_models_ready`、`downloader::download_models`、`reqwest`（list_deepseek_models 直接发 HTTP） |
 | `capture.rs` | `capture_all`（截全屏+缓存帧+写临时 BMP+返回 `MonitorDto`）/ `get_last_capture`（重建 DTO）/ `save_image_copy`（复制结果图到目标路径） | `CaptureProvider::capture_all` |
 | `ocr_translate.rs` | `crop_region`（裁剪缓存帧+写临时 PNG+缓存进 `last_crop`+返回路径）/ `recognize_region`（从 `last_crop` 取图 OCR+`align` 前的原文清洗+缓存进 `last_ocr`+返回 OCR 行与整段原文）/ `translate_region`（从 `last_ocr` 取原文翻译+`align_lines` 配对+写历史+返回逐行译文/整段译文/Provider/耗时）；核心管线抽成纯函数 `run_ocr`+`run_translate`（不依赖 Tauri，便于 mock 测试）；图像编码 helper `encode_png`（PNG 写盘/入库复用）+ `read_last_crop_png`（取裁剪图编码入历史） | `OcrProvider::recognize`、`TranslationProvider::translate`、`HistoryStore::insert` |
@@ -243,16 +256,17 @@ Tauri 应用后端。命令层包装 `snaptext-core` 的 Provider，系统集成
 
 ## src/ 🟢（Vue 3 前端，Naive UI）
 
-多窗口共用一套路由表，靠 hash 路由（`#/home`/`#/settings`/`#/history`/`#/capture`/`#/result`）区分窗口内容。
+多窗口共用一套路由表，靠 hash 路由（`#/home`/`#/onboarding`/`#/settings`/`#/history`/`#/capture`/`#/result`）区分窗口内容。
 
 | 文件 | 职责 |
 |---|---|
 | `main.ts` | createApp + Pinia + router + 全局样式 |
 | `App.vue` | n-config-provider（中文 locale）+ message/dialog provider + router-view |
 | `api.ts` | 所有 Tauri 命令的 TS 封装 + DTO 类型（与 Rust 端对齐）+ `fileSrc`(convertFileSrc) |
-| `router.ts` | hash 路由，5 个 view |
+| `router.ts` | hash 路由，6 个 view |
 | `styles/global.css` | 全局浅色主题 CSS 变量 |
-| `views/Home.vue` | 主窗口首页：状态卡（模型/翻译就绪态）+ 截图/设置/历史入口 |
+| `views/Home.vue` | 主窗口首页：状态卡（模型/翻译就绪态）+ 截图/设置/历史入口；`onMounted` 判断 `onboarding_completed===false` 则 `router.replace('/onboarding')` |
+| `views/Onboarding.vue` | 首启引导：三步向导（快捷键→下载 OCR 模型→翻译配置可选）。单标志位 `onboarding_completed` 持久化——仅"完成/跳过"置 true，中途关闭仍 false→下次重进。下载步监听 `download-progress`/`download-done`（按 det/rec/dict 三段权重折算进度），`onBeforeUnmount` 清理 unlisten；模型幂等检查（`is_models_ready`）已就绪跳过；配置末尾统一 `save_config` 一次 |
 | `views/Settings.vue` | 设置面板：8 分类（通用/快捷键/截图/OCR/翻译/界面/历史/关于），草稿机制保存 |
 | `views/History.vue` | 历史面板：左列表 + 右详情（截图 base64 + 原文/译文）+ 搜索/刷新/单删/清空 |
 | `views/Capture.vue` | 选区窗口：全屏 Canvas 显示截图 + 鼠标拖拽框选 + 抬起调 `crop_region`（仅裁剪+写临时图）即创建结果窗口、关闭选区窗。**窗口以 hidden 创建，首次 `draw()` 画上截图 + 双层 rAF 等合成后再 `show()`，消除创建→绘制间的白闪** |
@@ -271,6 +285,9 @@ Tauri 应用后端。命令层包装 `snaptext-core` 的 Provider，系统集成
 
 | 文件 | 用途 | 归属 |
 |---|---|---|
+| `dev.bat` | 开发启动器（检查 Node/Cargo 依赖 → `npm run tauri dev`）；`cd /d "%~dp0.."` 切到项目根 | 开发 |
+| `build.bat` | 打包脚本（构建 NSIS + MSI 安装包）；`cd /d "%~dp0.."` 切到项目根 | DU-13 |
+| `reset-onboarding.bat` | 重置 `onboarding_completed=false`（保留 Key/模型，仅让引导页下次重显）；改 `%APPDATA%\SnapText\config.toml` | 开发辅助 |
 | `download-models.ps1` | 离线下载 PP-OCRv6 模型（开发/无网环境辅助；⚠️ 脚本仍下载到 `%APPDATA%\SnapText\models\`，与现便携模式 `models\` 路径不一致，使用时手动调整） | DU-13 |
 | `stress-test.ps1` | 稳定性压测（模拟热键 + 鼠标，连续框选） | DU-12 验收 |
 
