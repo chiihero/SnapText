@@ -1,32 +1,69 @@
+<div align="center">
+
 # SnapText
 
-> 截图 OCR + 翻译桌面应用（Windows）。框选屏幕区域 → 本地 OCR 识别 → 调用翻译 API → 译文图上原位覆盖，全程快捷键驱动。
+**截图 OCR + 翻译 · 本地优先 · 快捷键驱动**
 
-[![release](https://img.shields.io/badge/release-v0.1.0-blue)](https://github.com/chiihero/SnapText/releases/tag/v0.1.0)
+框选屏幕区域 → 本地 OCR 识别 → 调用翻译 API → 译文图上原位覆盖
+
+[![release](https://img.shields.io/badge/release-v0.1.0-blue?logo=github)](https://github.com/chiihero/SnapText/releases/latest)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![rust](https://img.shields.io/badge/Rust-stable-orange?logo=rust)](https://rustup.rs)
+[![tauri](https://img.shields.io/badge/Tauri-2-blueviolet?logo=tauri)](https://tauri.app)
+[![platform](https://img.shields.io/badge/platform-Windows-lightgrey?logo=windows)](https://github.com/chiihero/SnapText/releases/latest)
 
-👇 **[下载最新版](https://github.com/chiihero/SnapText/releases/latest)** —— Windows 安装包 `SnapText_x.x.x_x64-setup.exe`
+### 👇 [下载最新版](https://github.com/chiihero/SnapText/releases/latest)
+
+*`SnapText_x.x.x_x64-setup.exe` · Windows 安装包*
+
+</div>
 
 ---
 
-## 界面预览
+## 📸 界面预览
 
-| 主界面 | 历史记录 | 设置 |
-|:---:|:---:|:---:|
-| ![主界面](docs/截图/主界面.png) | ![历史记录](docs/截图/历史记录界面.png) | ![设置](docs/截图/设置界面.png) |
-| 深色紧凑窗口，快捷键键帽 + 「立即截图」 | 卡片列表，含原文 / 译文 / 时间 / 截图缩略图 | 热键 / 截图 / OCR / 翻译 / UI 分区配置 |
+<div align="center">
+<table>
+<tr>
+<td align="center"><b>主界面</b></td>
+<td align="center"><b>历史记录</b></td>
+<td align="center"><b>设置</b></td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/main.png" width="280" alt="主界面"></td>
+<td><img src="docs/screenshots/history.png" width="280" alt="历史记录"></td>
+<td><img src="docs/screenshots/settings.png" width="280" alt="设置"></td>
+</tr>
+<tr>
+<td align="center"><sub>深色紧凑窗口<br>快捷键键帽 + 立即截图</sub></td>
+<td align="center"><sub>卡片列表<br>原文 / 译文 / 时间 / 缩略图</sub></td>
+<td align="center"><sub>热键 / OCR / 翻译 / UI<br>可视化配置</sub></td>
+</tr>
+</table>
+</div>
 
-## 功能特性
+## ✨ 功能特性
 
-- ⌨️ **快捷键驱动**：默认 `Ctrl+Alt+Q` 一键触发截图，全程不离开键盘
-- 🔒 **本地 OCR**：PaddleOCR PP-OCRv6（ONNX 推理），离线运行，数据不出本机
-- 🌐 **多翻译后端**：DeepL / DeepSeek / Microsoft，OpenAI 兼容协议
-- 📝 **译文原位覆盖**：识别后译文直接叠加回原图选区，所见即所得
-- 🗂️ **历史记录**：SQLite 本地存储，按原图 / 译文 / 时间检索过往翻译
-- ⚙️ **可视化配置**：引导页 + 设置面板，热键 / Provider / OCR 档位 / UI 细节均可调
-- 🎈 **便携模式**：OCR 模型跟程序走（安装目录 `models/`），便于检查与分发
+- ⌨️ **快捷键驱动** — 默认 `Ctrl+Alt+Q` 一键触发截图，全程不离开键盘
+- 🔒 **本地 OCR** — PaddleOCR PP-OCRv6（ONNX 推理），离线运行，数据不出本机
+- 🌐 **多翻译后端** — DeepL / DeepSeek / Microsoft，OpenAI 兼容协议
+- 📝 **译文原位覆盖** — 识别后译文直接叠加回原图选区，所见即所得
+- 🗂️ **历史记录** — SQLite 本地存储，按原图 / 译文 / 时间检索过往翻译
+- ⚙️ **可视化配置** — 引导页 + 设置面板，热键 / Provider / OCR 档位 / UI 细节均可调
+- 🎈 **便携模式** — OCR 模型跟程序走（安装目录 `models/`），便于检查与分发
 
-## 技术栈
+## 🚀 使用流程
+
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│  按 Ctrl+   │ ->│  鼠标框选   │ -> │  本地 OCR   │ -> │  译文原位   │
+│  Alt+Q      │    │  屏幕区域   │    │  识别文字   │    │  覆盖展示   │
+└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
+```
+
+> 译文同时写入历史记录，可随时回看与复制。
+
+## 🛠️ 技术栈
 
 - **后端**：Rust（Tauri 2 workspace）
   - `crates/snaptext-core`：纯逻辑库（OCR / 翻译 / 历史 / 模型管理 / 截图）
@@ -35,13 +72,11 @@
 - **OCR**：PaddleOCR PP-OCRv6（本地 ONNX 推理，离线）
 - **翻译**：DeepL / Microsoft / OpenAI 兼容（DeepSeek 等）
 
-## 快速开始
+## 📦 快速开始
 
 ### 环境要求
 
-- [Node.js](https://nodejs.org)
-- [Rust](https://rustup.rs)（见 `rust-toolchain.toml`）
-- Windows（截图依赖 Windows Graphics Capture API）
+- [Node.js](https://nodejs.org) · [Rust](https://rustup.rs)（见 `rust-toolchain.toml`）· Windows
 
 ### 开发运行
 
@@ -56,32 +91,29 @@ npm run tauri dev
 
 ### 打包
 
-双击 `scripts/build.bat`，或手动：
-
 ```bash
-npm run tauri build
+npm run tauri build        # 或双击 scripts/build.bat
 ```
 
 安装包输出到 `src-tauri/target/release/bundle/`（NSIS）。
 
 ### 发布到 GitHub Release
 
-推送形如 `v*` 的 tag 即触发云端自动构建并发布（见 `.github/workflows/release.yml`）：
-
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag vX.Y.Z && git push origin vX.Y.Z    # 触发 CI 自动构建发布
 ```
 
-CI 在 `windows-latest` 上编译，自动产出 `*-setup.exe` 到 Release。构建约 10–20 分钟，可在 Actions 页查看日志。完整发版流程见 [`docs/RELEASE.md`](docs/RELEASE.md)。
+CI 在 `windows-latest` 上编译，自动产出 `*-setup.exe` 到 Release（约 10–20 分钟）。完整发版流程见 [`docs/RELEASE.md`](docs/RELEASE.md)。
 
 ### 其他脚本
 
-- `scripts/reset-onboarding.bat`：重置引导标志（保留 Key 和模型，仅让引导页下次重新出现）
-- `scripts/download-models.ps1`：离线下载 OCR 模型（辅助）
-- `scripts/stress-test.ps1`：压测脚本
+| 脚本 | 用途 |
+|---|---|
+| `scripts/reset-onboarding.bat` | 重置引导标志（保留 Key / 模型，让引导页重显） |
+| `scripts/download-models.ps1` | 离线下载 OCR 模型（辅助） |
+| `scripts/stress-test.ps1` | 稳定性压测 |
 
-## 项目结构
+## 📁 项目结构
 
 ```
 crates/snaptext-core/   纯逻辑库（OCR / 翻译 / 历史 / 截图 / 模型管理）
@@ -93,14 +125,12 @@ docs/                   设计文档（CODE_MAP / DESIGN / TASKS / PROGRESS / RE
 
 > 三个核心目录名分别绑定 Vite（`src/`）、Tauri CLI（`src-tauri/`）、Cargo workspace（`crates/`）的约定，非项目自定义；命名溯源见 [`docs/CODE_MAP.md`](docs/CODE_MAP.md) §顶层结构。
 
-## 文档
+## 📚 文档
 
-详细的架构、文件职责、设计决策见 [`docs/`](docs/)：
-
-- [`docs/CODE_MAP.md`](docs/CODE_MAP.md)：文件路径 ↔ 职责 ↔ 依赖映射
-- [`docs/DESIGN.md`](docs/DESIGN.md)：核心模块设计与技术选型
-- [`docs/RELEASE.md`](docs/RELEASE.md)：发布到 GitHub Release 的操作手册
-- 开发规范见 [`AGENTS.md`](AGENTS.md)
+- [`docs/CODE_MAP.md`](docs/CODE_MAP.md) — 文件路径 ↔ 职责 ↔ 依赖映射
+- [`docs/DESIGN.md`](docs/DESIGN.md) — 核模块设计与技术选型
+- [`docs/RELEASE.md`](docs/RELEASE.md) — 发布到 GitHub Release 操作手册
+- [`AGENTS.md`](AGENTS.md) — 开发规范
 
 ## License
 
