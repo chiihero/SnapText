@@ -38,7 +38,7 @@ npm run tauri dev
 npm run tauri build
 ```
 
-安装包输出到 `src-tauri/target/release/bundle/`（NSIS + MSI）。
+安装包输出到 `src-tauri/target/release/bundle/`（NSIS）。
 
 ### 发布到 GitHub Release
 
@@ -49,7 +49,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-CI 在 `windows-latest` 上编译，自动产出 `*-setup.exe` + `*.msi` 到 Release。构建约 10–20 分钟，可在 Actions 页查看日志。
+CI 在 `windows-latest` 上编译，自动产出 `*-setup.exe` 到 Release。构建约 10–20 分钟，可在 Actions 页查看日志。
 
 ### 其他脚本
 

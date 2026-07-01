@@ -61,7 +61,7 @@ git push origin vX.Y.Z
 **push tag 的瞬间，GitHub Actions 自动开跑**（见 `.github/workflows/release.yml`）：
 - Runner：`windows-latest`
 - 流程：`npm ci` → Rust stable 编译 → `tauri-action` 打包
-- 产物：NSIS `*-setup.exe` + MSI `*.msi`，自动发布到 Release
+- 产物：NSIS `*-setup.exe`，自动发布到 Release
 
 ### Step 5 — 监控构建（约 10–20 分钟，Rust 编译慢属正常）
 
@@ -100,13 +100,13 @@ gh release view vX.Y.Z  # 构建成功后查看 Release 产物下载链接
 ```bash
 # 本地出包
 scripts/build.bat    # 或 npm run tauri build
-# 产物在 src-tauri/target/release/bundle/{nsis,msi}/
+# 产物在 src-tauri/target/release/bundle/nsis/
 ```
 
 然后浏览器打开 `https://github.com/chiihero/SnapText/releases/new`：
 1. 选刚 push 的 tag（如 `vX.Y.Z`）
 2. 填标题 `SnapText vX.Y.Z`
-3. 拖入 `*-setup.exe` 和 `*.msi`
+3. 拖入 `*-setup.exe`
 4. 填发布说明（可从 `CHANGELOG.md` 复制）
 5. 发布
 

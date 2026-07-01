@@ -250,7 +250,7 @@ Tauri 应用后端。命令层包装 `snaptext-core` 的 Provider，系统集成
 
 ### tauri.conf.json / capabilities/default.json 🟢
 
-- `tauri.conf.json`：主窗口定义（label=main, `index.html#/home`）、前端指向（devUrl:1420 / frontendDist:../dist）、打包（nsis+msi）
+- `tauri.conf.json`：主窗口定义（label=main, `index.html#/home`）、前端指向（devUrl:1420 / frontendDist:../dist）、打包（nsis）
 - `capabilities/default.json`：权限集（窗口创建/关闭/聚焦、webview、event、global-shortcut、clipboard、dialog）
 
 ---
@@ -287,7 +287,7 @@ Tauri 应用后端。命令层包装 `snaptext-core` 的 Provider，系统集成
 | 文件 | 用途 | 归属 |
 |---|---|---|
 | `dev.bat` | 开发启动器（检查 Node/Cargo 依赖 → `npm run tauri dev`）；`cd /d "%~dp0.."` 切到项目根 | 开发 |
-| `build.bat` | 打包脚本（构建 NSIS + MSI 安装包）；`cd /d "%~dp0.."` 切到项目根 | DU-13 |
+| `build.bat` | 打包脚本（构建 NSIS 安装包）；`cd /d "%~dp0.."` 切到项目根 | DU-13 |
 | `reset-onboarding.bat` | 重置 `onboarding_completed=false`（保留 Key/模型，仅让引导页下次重显）；改 `%APPDATA%\SnapText\config.toml` | 开发辅助 |
 | `download-models.ps1` | 离线下载 PP-OCRv6 模型（开发/无网环境辅助；⚠️ 脚本仍下载到 `%APPDATA%\SnapText\models\`，与现便携模式 `models\` 路径不一致，使用时手动调整） | DU-13 |
 | `stress-test.ps1` | 稳定性压测（模拟热键 + 鼠标，连续框选） | DU-12 验收 |
@@ -300,7 +300,7 @@ Tauri 应用后端。命令层包装 `snaptext-core` 的 Provider，系统集成
 
 | 文件 | 用途 |
 |---|---|
-| `release.yml` | 发布工作流。`push` 形如 `v*` 的 tag（或手动 `workflow_dispatch`）→ `windows-latest` runner 上 `npm ci` + Rust stable + `tauri-apps/tauri-action@v0` 云端打包，自动产出 NSIS(`*-setup.exe`) + MSI 并创建 GitHub Release。需 `permissions: contents: write`。 |
+| `release.yml` | 发布工作流。`push` 形如 `v*` 的 tag（或手动 `workflow_dispatch`）→ `windows-latest` runner 上 `npm ci` + Rust stable + `tauri-apps/tauri-action@v0` 云端打包，自动产出 NSIS(`*-setup.exe`) 并创建 GitHub Release。需 `permissions: contents: write`。 |
 
 > **为什么不本地发版**：本地 `scripts/build.bat` 也能出包，但 CI 化后发版只需 `git tag vX.Y.Z && git push origin vX.Y.Z`，长期复用、可追溯、未来易扩展跨平台 target。
 
