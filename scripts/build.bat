@@ -54,7 +54,6 @@ if %BUILD_CODE% neq 0 (
 echo.
 echo [完成] 打包成功！安装包位于:
 echo       src-tauri\target\release\bundle\nsis\
-echo       src-tauri\target\release\bundle\msi\
 echo.
 
 :end
