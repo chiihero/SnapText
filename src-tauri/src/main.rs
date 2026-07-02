@@ -29,7 +29,11 @@ fn main() {
                 // path 形如 "/DISPLAY1"（safe_id：原 monitor id 已替换非法字符）。
                 let wanted = path.trim_start_matches('/');
                 let state = app.state::<crate::state::AppState>();
-                let bytes = {
+                // 在持锁期间直接编码 BMP，免 clone 整张全屏图（4K RGBA 单份 30MB+）。
+                // BMP 无压缩，编码很快；shot:// 仅选区窗绘制时拉一次，无并发竞争。
+                // 三态：Some(Ok)=成功 / Some(Err)=编码失败(500) / None=无对应帧(404)，
+                // 保持原有状态码语义。
+                let encoded: Option<Result<Vec<u8>, ()>> = {
                     let captured = state.captured.lock().await;
                     captured
                         .iter()
@@ -37,44 +41,31 @@ fn main() {
                             let safe = f.monitor.id.as_str().replace(['\\', '/', ':'], "_");
                             safe == wanted
                         })
-                        .map(|f| f.image.clone())
+                        .map(|f| {
+                            let mut buf = std::io::Cursor::new(Vec::new());
+                            f.image
+                                .write_to(&mut buf, image::ImageFormat::Bmp)
+                                .map(|()| buf.into_inner())
+                                .map_err(|e| {
+                                    tracing::warn!(error = %e, "shot 协议编码 BMP 失败");
+                                })
+                        })
                 };
-                match bytes {
-                    Some(image) => {
-                        let mut buf = std::io::Cursor::new(Vec::new());
-                        match image.write_to(&mut buf, image::ImageFormat::Bmp) {
-                            Ok(()) => {
-                                let body = buf.into_inner();
-                                responder.respond(
-                                    Response::builder()
-                                        .header("Content-Type", "image/bmp")
-                                        // shot:// URL 按 monitor id 固定，无此头 WebView2
-                                        // 会命中缓存显示旧截图。前端另加 ?t= 时间戳双保险。
-                                        .header("Cache-Control", "no-store")
-                                        .body(body)
-                                        .unwrap(),
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "shot 协议编码 BMP 失败");
-                                responder.respond(
-                                    Response::builder()
-                                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                        .body(Vec::new())
-                                        .unwrap(),
-                                );
-                            }
-                        }
-                    }
-                    None => {
-                        responder.respond(
-                            Response::builder()
-                                .status(StatusCode::NOT_FOUND)
-                                .body(Vec::new())
-                                .unwrap(),
-                        );
-                    }
-                }
+                let response = match encoded {
+                    Some(Ok(body)) => Response::builder()
+                        .header("Content-Type", "image/bmp")
+                        // shot:// URL 按 monitor id 固定，无此头 WebView2 会命中缓存显示旧截图。
+                        // 前端另加 ?t= 时间戳双保险。
+                        .header("Cache-Control", "no-store")
+                        .body(body),
+                    Some(Err(())) => Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Vec::new()),
+                    None => Response::builder()
+                        .status(StatusCode::NOT_FOUND)
+                        .body(Vec::new()),
+                };
+                responder.respond(response.unwrap());
             });
         })
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {

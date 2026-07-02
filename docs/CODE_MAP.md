@@ -2,7 +2,9 @@
 
 > 给 AI 用：快速定位"改 X 看哪里"、"动 A 影响哪些 B"、"哪些文件禁止碰"。
 
-最后更新：2026-07-01（**文档补强：三目录命名溯源**：用户反馈 `crates`/`src`/`src-tauri` 三个目录"看起来奇怪"。经调研确认三者名字分别绑定 Vite（`src/` 默认前端入口）、Tauri CLI（`src-tauri/` 强约定，CLI 靠它定位后端项目）、Cargo workspace（`crates/` 社区惯例，crate 分组目录），改名得不偿失且偏离 create-tauri-app 主流模板。决定不改目录，改为在 §顶层结构补命名脚注消解困惑。`src` 与 `src-tauri` 视觉撞名是所有 Tauri 项目的固有特征，靠"前端=TS / 后端=Rust"语言差异区分。改动文件：`docs/CODE_MAP.md`、`README.md`。）
+最后更新：2026-07-02（**OCR 大图内存不回落优化**：用户反馈 release 构建下 OCR 大图后内存飙升且不回落（达 2-3G）。根因在 ort 2.0.0-rc.12：默认开启的 `memory_pattern` 在动态 shape（oar-ocr Type0 resize，每张图尺寸不同）下按"见过的最大 shape"扩容 pattern buffer 并永久保留，且 ort 无"推理后释放 arena"的 API（arena 仅随 session drop 释放）。叠加 oar-ocr 默认偏大的 batch（det=8）和 SnapText 接力缓存不清，导致大图后内存只涨不降。**4 处改动对症优化**：① `paddleocr.rs::new` 经 oar-ocr 的 `ort_session()` 透传口子传 `OrtSessionConfig`——关 `memory_pattern`、`intra_threads` 封顶 4、`image_batch_size(2)`/`region_batch_size(16)`（降单次推理峰值 + 阻断 pattern buffer 扩容）。② `ocr_translate.rs::translate_region` 写历史后清空 `last_crop`/`last_ocr` 接力缓存（框选流程已结束，释放裁剪图 + OCR 行）。③ `main.rs` shot:// 协议改为持锁期间直接编码 BMP（免 clone 整张全屏图，4K RGBA 单份 30MB+），保持原有三态状态码语义（200/500/404）。④ 不改 OCR 默认档（用户确认保持 Medium）、不重建 session（oar-ocr 无 API 且成本高）。**验证**：fmt + clippy -D warnings（0 警告）+ test --workspace（core 46 + src-tauri 19 全过）。改动文件：`crates/snaptext-core/src/ocr/paddleocr.rs`、`src-tauri/src/commands/ocr_translate.rs`、`src-tauri/src/main.rs`。实测验证留给用户：连续多次框选大图确认内存不再持续攀升。）
+
+2026-07-01（**文档补强：三目录命名溯源**：用户反馈 `crates`/`src`/`src-tauri` 三个目录"看起来奇怪"。经调研确认三者名字分别绑定 Vite（`src/` 默认前端入口）、Tauri CLI（`src-tauri/` 强约定，CLI 靠它定位后端项目）、Cargo workspace（`crates/` 社区惯例，crate 分组目录），改名得不偿失且偏离 create-tauri-app 主流模板。决定不改目录，改为在 §顶层结构补命名脚注消解困惑。`src` 与 `src-tauri` 视觉撞名是所有 Tauri 项目的固有特征，靠"前端=TS / 后端=Rust"语言差异区分。改动文件：`docs/CODE_MAP.md`、`README.md`。）
 
 2026-07-01（**项目级清理第 2 批（脚本归整 + 文档完善）**：根目录散落的中文脚本归入 `scripts/` 并改英文名——`开发.bat`→`scripts/dev.bat`、`打包.bat`→`scripts/build.bat`、`重置引导.bat`→`scripts/reset-onboarding.bat`（消除中文文件名在 git/shell 的编码隐患，与既有 `scripts/*.ps1` 统一约定）。三个 bat 的 `cd /d "%~dp0"` 改为 `cd /d "%~dp0.."`（脚本已移入 `scripts/` 子目录，须切到上一级项目根才能找到 `package.json`/`node_modules` 跑 `npm run tauri`）。`reset-onboarding.bat` 内对 `kai-fa.bat` 的提示引用改为 `scripts\dev.bat`。`.gitignore` 删历史遗留 `smiley-tmp.zip`（与项目无关）。`README.md` 从一行扩为工程文档（技术栈/环境/启动/结构/文档索引）。CODE_MAP `scripts/` 表同步补三行。**验证**：grep 确认无 `kai-fa`/中文 bat 残留引用；三个 bat 的 cd 行已改为项目根。）
 
@@ -149,6 +151,8 @@ pub enum CoreError {
 | `postprocess.rs` 🟢 | OCR 输出后处理（去 CJK 空格 / 合并换行 / trim） | `clean_ocr_text` | — |
 
 **关键事实**（DU-04 落地）：oar-ocr 的 `OAROCR` 已实现 `Send + Sync`（内部 `Arc<Session>`），用 `Arc<OAROCR>` 跨线程共享，无需手动 `Mutex`（AI_GUIDE §3.1 陷阱已被 oar-ocr 解决）。ort 2.0 的 onnxruntime.dll 经 `download-binaries` 自动下载（R2 通过）。
+
+**ort session 内存优化配置**（2026-07-02 落地，对症"大图 OCR 后内存不回落"）：`PaddleOcrProvider::new` 构造 `OAROCRBuilder` 时显式传 `OrtSessionConfig`——关 `memory_pattern`（oar-ocr 用动态 shape/Type0 resize，ort 默认开的 mem pattern 会按"见过的最大 shape"扩容并永久保留，ort 官方明确说动态尺寸应关）、`intra_threads` 封顶 4（默认用满全核，各线程临时 buffer 叠加抬高峰值）、`image_batch_size(2)` + `region_batch_size(16)`（oar-ocr 默认 det=8 / rec=推荐，框选场景一次一张图，大 batch 无收益纯费内存）。ort 2.0.0-rc.12 **无"推理后释放 arena"API**（arena 仅随 session drop 释放），故靠关 pattern + 降 batch 从源头压住峰值；`OrtSessionConfig` 经 oar-ocr 的 `ort_session()` 透传口子传给 det/rec 所有 session，无需 fork。
 
 ### src/translate/ 🟢
 

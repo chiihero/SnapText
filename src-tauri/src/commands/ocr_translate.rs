@@ -202,6 +202,12 @@ pub async fn translate_region(state: State<'_, AppState>) -> Result<TranslateRes
         tracing::warn!(error = %e, "写入历史失败");
     }
 
+    // 框选流程已结束，清空接力缓存释放内存（裁剪图 + OCR 行）。
+    // 必须在 read_last_crop_png() 写历史之后清——历史记录要带裁剪图 PNG。
+    // 下次框选会重新走 crop_region → recognize_region → translate_region 写回。
+    *state.last_crop.lock().await = None;
+    *state.last_ocr.lock().await = None;
+
     Ok(TranslateResult {
         translations,
         translated: resp.translated_text,

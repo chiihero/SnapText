@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use oar_ocr::core::config::onnx::{OrtGraphOptimizationLevel, OrtSessionConfig};
 use oar_ocr::oarocr::{OAROCRBuilder, OAROCR};
 
 use super::preprocess::to_rgb;
@@ -43,7 +44,26 @@ impl PaddleOcrProvider {
         if !dict.exists() {
             return Err(OcrError::ModelNotFound { path: dict });
         }
+        // 内存优化配置（对症"大图 OCR 后内存不回落"）：
+        // - 关 memory_pattern：ort 默认开启，但 oar-ocr 用动态 shape（Type0 resize），
+        //   每张图尺寸不同，ort 会按"见过的最大 shape"扩容 pattern buffer 且永久保留。
+        //   ort 官方文档明确说动态尺寸应关闭此选项。
+        // - intra_threads 封顶 4：默认用满全核，各线程的临时 buffer 叠加会抬高峰值。
+        //   OCR 计算量不大，4 线程够用；取核数与 4 的较小值，避免低核机器被拉高。
+        // - image_batch_size(2) / region_batch_size(16)：oar-ocr 默认 det=8 / rec=推荐(较大)，
+        //   框选场景一次只一张图，大 batch 无收益纯费内存；注释明说"16 for low VRAM/CPU"。
+        let intra = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(4);
+        let ort_cfg = OrtSessionConfig::new()
+            .with_memory_pattern(false)
+            .with_intra_threads(intra)
+            .with_optimization_level(OrtGraphOptimizationLevel::Level1);
         let engine = OAROCRBuilder::new(det, rec, dict)
+            .ort_session(ort_cfg)
+            .image_batch_size(2)
+            .region_batch_size(16)
             .build()
             .map_err(|e| OcrError::ModelLoad(e.to_string()))?;
         Ok(Self {
