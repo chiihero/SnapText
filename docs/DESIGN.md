@@ -388,7 +388,7 @@ URL：`https://www.modelscope.cn/models/greatv/oar-ocr/resolve/master/pp-ocrv6_{
 
 **选区窗口**（`Capture.vue`）：Tauri 全屏无边框置顶透明窗口，Canvas 渲染截图 + 鼠标拖拽框选。窗口在 main setup 预创建并隐藏（WebView2/Vue 常驻预热），热键时直接 show 省 ~400ms 冷启动。窗口以 hidden 创建，首次 `draw()` 画上截图 + 双层 `requestAnimationFrame` 等合成完才 show，消除创建→绘制间的白闪。截图经 `shot://` 自定义协议从内存直接取 BMP（不写临时文件）。
 
-**结果窗口**（`Result.vue`）：Tauri 普通窗口，Canvas 以选区裁剪图为背景，按 OCR 行 bbox 擦白后绘制译文（原位覆盖）。两阶段渲染：原图 → "正在识别" → 原位显示原文 → "正在翻译" → 原位替换译文。工具栏：原文/译文切换、复制、保存、关闭。三层命令（`crop_region`/`recognize_region`/`translate_region`）在结果窗 `onMounted` 内分阶段触发，抬起几十 ms 即弹窗显示原图。
+**结果窗口**（`Result.vue`）：Tauri 普通窗口，Canvas 以选区裁剪图为背景，按 OCR 行 bbox 贴同位置模糊区块弱化背景。**文字层为 DOM `<div>`（按 OCR 行 bbox 百分比绝对定位，盖在 canvas 上），非 canvas 位图**——可鼠标拖选部分文字复制（松开自动写剪贴板 + toast，Ctrl+C 也可用），描边用 `-webkit-text-stroke` + `paint-order:stroke fill` 复刻原 strokeText 视觉（PDF.js 文字层同款做法）。两阶段渲染：原图 → "正在识别" → 原位显示原文 → "正在翻译" → 原位替换译文。工具栏：原文/译文切换、复制原文/复制译文（整段）、保存、关闭。单行点击翻转原文/译文（拖选时 `getSelection()` 非空则不翻转，避免误触）。三层命令（`crop_region`/`recognize_region`/`translate_region`）在结果窗 `onMounted` 内分阶段触发，抬起几十 ms 即弹窗显示原图。
 
 **设置面板**（`Settings.vue`）：普通窗口，左侧导航（8 分类）+ 右侧 `n-form` 分组卡片。草稿机制：编辑本地 draft 副本，保存时调 `save_config` 命令写盘 + 重建 Provider + 重注册热键；API Key 用 `n-input` 密码框。
 

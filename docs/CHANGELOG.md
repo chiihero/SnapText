@@ -2,6 +2,16 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/) 格式。
 
+## [0.1.2] — 2026-07-02 · 结果窗口交互优化
+
+### 改进
+- **OCR 文字层改为 DOM 可拖选复制**（`Result.vue`）：原文/译文从 canvas 位图改为按 OCR 行 bbox 绝对定位的 DOM `<div>` 文字层（PDF.js 文字层同款做法）。鼠标可框选部分文字、松开自动复制到剪贴板（Ctrl+C 仍可用），单行点击翻转原文/译文（拖选时 `getSelection()` 非空则不翻转，避免误触）。背景改为按 bbox 贴同位置模糊原图区块弱化，描边用 `-webkit-text-stroke` + `paint-order:stroke fill` 复刻原 strokeText 视觉。
+
+### 修复
+- **结果窗口工具栏按钮位置跳动**：顶部状态条用 `v-if="statusText"` 控制，文字为空时整条消失，下方工具栏整体上移跳动（典型：点「原文」OCR 完成显示提示行 → 点回「原图」行消失 → 按钮上跳）。改为状态条始终渲染 + `min-height` 占位锁死高度；并补全 `statusText` 分支，原图态（OCR 已完成）显示「已识别，点「原文」查看」提示，消除空感。
+
+---
+
 ## [0.1.1] — 2026-07-02 · 内存优化 + README 完善
 
 ### 修复

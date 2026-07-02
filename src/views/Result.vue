@@ -31,6 +31,7 @@ const statusText = computed(() => {
   if (phase.value === "recognizing") return "正在识别…";
   if (phase.value === "translating") return "正在翻译…";
   if (view.value === "image" && !ocrDone.value) return "点「原文」开始识别";
+  if (view.value === "image" && ocrDone.value) return "已识别，点「原文」查看";
   if (view.value === "original" && !translateDone.value) return "点「译文」开始翻译";
   return "";
 });
@@ -62,6 +63,9 @@ const img = new Image();
 const blurredCanvas = document.createElement("canvas");
 const perLineOriginal = ref<boolean[]>([]);
 const fontSize = ref(14);
+// 原图像素尺寸：img.onload 记录，DOM 文字层按 bbox 百分比定位时做分母。
+const imgW = ref(0);
+const imgH = ref(0);
 
 onMounted(async () => {
   t0Base = performance.now();
@@ -70,6 +74,8 @@ onMounted(async () => {
     const crop = await api.getLastCrop();
     shotPath.value = crop.shot_path;
     img.onload = () => {
+      imgW.value = img.naturalWidth;
+      imgH.value = img.naturalHeight;
       renderBlurred();
       draw();
     };
@@ -118,6 +124,7 @@ function renderBlurred() {
   ctx.filter = "none";
 }
 
+// draw 只画 canvas 底图 + 模糊区块；文字交给 DOM 文字层（按 bbox 绝对定位），可选中复制。
 function draw() {
   const c = canvas.value;
   if (!c || !img.naturalWidth) return;
@@ -125,37 +132,42 @@ function draw() {
   c.width = img.naturalWidth;
   c.height = img.naturalHeight;
   ctx.drawImage(img, 0, 0);
-  // 原图态或尚无 OCR 结果：只画截图，不叠加任何文字。
+  // 原图态或尚无 OCR 结果：只画截图，不叠模糊区块。
   if (view.value === "image" || ocrLines.value.length === 0) return;
-  ctx.font = `${fontSize.value}px "Microsoft YaHei UI", "Microsoft YaHei", sans-serif`;
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "left";
-  ocrLines.value.forEach((line, i) => {
+  // 每行按 bbox 贴同位置模糊原图区块（弱化背景、不擦除），取代纯白硬擦。
+  if (blurredCanvas.width === 0) return;
+  ocrLines.value.forEach((line) => {
     const b = line.bbox;
-    // original 态恒显示原文；translated 态按单行点击翻转（点行→该行切原文）。
-    const showOrig =
-      view.value === "original" ||
-      (view.value === "translated" && perLineOriginal.value[i]);
-    const text =
-      showOrig || translations.value.length === 0
-        ? line.text
-        : translations.value[i] ?? "";
-    // 背景：贴同位置模糊原图区块（弱化背景、不擦除），取代纯白硬擦。
-    if (blurredCanvas.width > 0) {
-      ctx.drawImage(
-        blurredCanvas,
-        b.x, b.y, b.w, b.h, // 源：模糊图同 bbox 区块
-        b.x, b.y, b.w, b.h, // 目标：主 canvas 原位置
-      );
-    }
-    // 文字：深色 + 半透明白描边，保证在任意模糊背景上都清晰（微信同款做法）。
-    ctx.lineJoin = "round";
-    ctx.lineWidth = Math.max(2, fontSize.value / 5);
-    ctx.strokeStyle = "rgba(255,255,255,0.85)";
-    ctx.strokeText(text, b.x + 2, b.y + b.h / 2, b.w - 4);
-    ctx.fillStyle = "#1d2129";
-    ctx.fillText(text, b.x + 2, b.y + b.h / 2, b.w - 4);
+    ctx.drawImage(
+      blurredCanvas,
+      b.x, b.y, b.w, b.h, // 源：模糊图同 bbox 区块
+      b.x, b.y, b.w, b.h, // 目标：主 canvas 原位置
+    );
   });
+}
+
+// DOM 文字层：按 OCR 行 bbox 百分比定位，使文字随 canvas 缩放同步对齐（与背景图同 relative 容器）。
+// 容器为 inline-block，自动包裹 canvas 渲染尺寸；文字层 inset:0 覆盖容器即等于 canvas 可见区。
+function lineStyle(line: OcrLine): Record<string, string> {
+  const w = imgW.value || 1;
+  const h = imgH.value || 1;
+  return {
+    left: `${(line.bbox.x / w) * 100}%`,
+    top: `${(line.bbox.y / h) * 100}%`,
+    width: `${(line.bbox.w / w) * 100}%`,
+    height: `${(line.bbox.h / h) * 100}%`,
+    fontSize: `${fontSize.value}px`,
+  };
+}
+
+// 第 i 行显示的文字：original 态恒原文；translated 态被翻转行显示原文，否则译文。
+function lineText(i: number): string {
+  const showOrig =
+    view.value === "original" ||
+    (view.value === "translated" && perLineOriginal.value[i]);
+  return showOrig || translations.value.length === 0
+    ? ocrLines.value[i].text
+    : translations.value[i] ?? "";
 }
 
 // OCR 阶段：调 recognize_region，成功后切到 original 视图。供 onMounted 自动与手动按钮复用。
@@ -227,21 +239,21 @@ async function selectView(v: View) {
   perLineOriginal.value = ocrLines.value.map(() => false);
 }
 
-function onClick(ev: MouseEvent) {
-  // 仅 translated 视图支持单行点击切原文（与全局态 XOR）。
+// 单行点击：仅 translated 态翻转该行原文/译文。
+// 拖选文字时 mouseup 也会触发 click——有非空选区则视为选择操作，不翻转。
+function onLineClick(i: number) {
   if (view.value !== "translated" || translations.value.length === 0) return;
-  const c = canvas.value!;
-  const rect = c.getBoundingClientRect();
-  const sx = c.width / rect.width;
-  const sy = c.height / rect.height;
-  const x = (ev.clientX - rect.left) * sx;
-  const y = (ev.clientY - rect.top) * sy;
-  ocrLines.value.forEach((line, i) => {
-    const b = line.bbox;
-    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
-      perLineOriginal.value[i] = !perLineOriginal.value[i];
-    }
-  });
+  const sel = window.getSelection?.()?.toString() ?? "";
+  if (sel) return; // 用户在拖选文字，忽略此次点击
+  perLineOriginal.value[i] = !perLineOriginal.value[i];
+}
+
+// 选中即复制：mouseup 时若文字层内有非空选区，写入剪贴板并提示。Ctrl+C 仍可用（浏览器原生）。
+async function onTextMouseUp() {
+  const sel = window.getSelection?.()?.toString() ?? "";
+  if (!sel) return;
+  await writeText(sel).catch(() => {});
+  message.success("已复制选中文字");
 }
 
 async function copyText(t: string, label: string) {
@@ -271,15 +283,16 @@ function close() {
 
 <template>
   <div style="display: flex; flex-direction: column; height: 100vh">
-    <!-- 顶部状态条：识别/翻译进度或手动提示 -->
+    <!-- 顶部状态条：识别/翻译进度或手动提示（始终占位锁死下方工具栏位置，避免按钮跳动） -->
     <div
-      v-if="statusText"
       style="
         padding: 6px 12px;
         background: var(--st-surface);
         border-bottom: 1px solid var(--st-border);
         color: #0078d7;
         font-size: 13px;
+        line-height: 1.2;
+        min-height: 20px;
       "
     >
       {{ statusText }}
@@ -340,12 +353,67 @@ function close() {
     </div>
     <!-- 译文叠加画布 -->
     <div style="flex: 1; overflow: auto; background: var(--st-bg); padding: 12px; text-align: center">
-      <canvas
-        v-if="shotPath"
-        ref="canvas"
-        @click="onClick"
-        style="max-width: 100%; max-height: calc(100vh - 96px); box-shadow: var(--st-shadow); border-radius: 4px; cursor: pointer"
-      />
+      <div v-if="shotPath" class="result-stage">
+        <canvas ref="canvas" class="result-canvas" />
+        <!-- 文字层：盖在 canvas 上，按 OCR 行 bbox 绝对定位，可鼠标选中复制（PDF.js 文字层同款） -->
+        <div
+          v-if="view !== 'image' && ocrLines.length"
+          class="text-layer"
+          @mouseup="onTextMouseUp"
+        >
+          <div
+            v-for="(line, i) in ocrLines"
+            :key="i"
+            class="ocr-line"
+            :style="lineStyle(line)"
+            @click="onLineClick(i)"
+          >{{ lineText(i) }}</div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+/* relative 容器：canvas 与文字层都按它定位，缩放同步。
+   inline-block 自动包裹 canvas 渲染尺寸；line-height:0 消除基线间隙避免容器多出几像素。 */
+.result-stage {
+  position: relative;
+  display: inline-block;
+  margin: 0 auto;
+  line-height: 0;
+}
+.result-canvas {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 96px);
+  box-shadow: var(--st-shadow);
+  border-radius: 4px;
+}
+/* 文字层：绝对定位铺满容器，不挡背景（pointer-events:none），命中交给行。 */
+.text-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+/* 每行 OCR 文字：按 bbox 百分比定位（lineStyle），DOM 真文本可拖选复制。
+   深色字 + 白描边复刻原 canvas strokeText 视觉（paint-order 保证描边在填充之下）。 */
+.ocr-line {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  pointer-events: auto;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+  color: #1d2129;
+  -webkit-text-stroke: 2px rgba(255, 255, 255, 0.85);
+  paint-order: stroke fill;
+  font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  /* 与原 draw() 一致：文字左侧贴 bbox 左缘 +2px，垂直居中 */
+  padding-left: 2px;
+}
+</style>

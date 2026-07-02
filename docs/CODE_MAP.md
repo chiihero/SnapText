@@ -275,7 +275,7 @@ Tauri 应用后端。命令层包装 `snaptext-core` 的 Provider，系统集成
 | `views/Settings.vue` | 设置面板：8 分类（通用/快捷键/截图/OCR/翻译/界面/历史/关于），草稿机制保存 |
 | `views/History.vue` | 历史面板：左列表 + 右详情（截图 base64 + 原文/译文）+ 搜索/刷新/单删/清空 |
 | `views/Capture.vue` | 选区窗口：全屏 Canvas 显示截图 + 鼠标拖拽框选 + 抬起调 `crop_region`（仅裁剪+写临时图）即创建结果窗口、关闭选区窗。**窗口以 hidden 创建，首次 `draw()` 画上截图 + 双层 rAF 等合成后再 `show()`，消除创建→绘制间的白闪** |
-| `views/Result.vue` | 结果窗口：原图→"正在识别"→原位显示原文→"正在翻译"→原位替换译文，两阶段渲染；工具栏（原文/译文切换、复制、保存、关闭）|
+| `views/Result.vue` | 结果窗口：原图→"正在识别"→原位显示原文→"正在翻译"→原位替换译文，两阶段渲染；工具栏（原文/译文切换、复制、保存、关闭）。**文字层为 DOM `<div>`（按 OCR 行 bbox 绝对定位）而非 canvas 位图——可鼠标选中部分文字复制（松开自动复制 + Ctrl+C）** |
 | `stores/config.ts` | 配置 Pinia（load/save） |
 > 注：原 `stores/capture.ts` 已删除——选区结果跨窗口传递改走后端缓存 + 命令拉取（Pinia 不跨窗口共享，见 `state.rs`）。
 
