@@ -2,6 +2,23 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/) 格式。
 
+## [0.1.1] — 2026-07-02 · 内存优化 + README 完善
+
+### 修复
+- **OCR 大图后内存飙升且不回落**：release 构建下框选大图 OCR 翻译后，内存飙到 2-3G 且不回落。根因在 ort 2.0.0-rc.12——默认开启的 `memory_pattern` 在动态 shape（oar-ocr Type0 resize，每张图尺寸不同）下按"见过的最大 shape"扩容 pattern buffer 并永久保留，且 ort 无"推理后释放 arena"的 API。4 处对症改动：
+  - **ort session 配置**（`paddleocr.rs`）：经 oar-ocr 的 `ort_session()` 透传口子传 `OrtSessionConfig`——关 `memory_pattern`（ort 官方明确说动态尺寸应关）、`intra_threads` 封顶 4（默认用满全核，各线程临时 buffer 叠加抬高峰值）、`image_batch_size(2)` / `region_batch_size(16)`（默认 det=8 / rec=推荐，框选场景一次一张图，大 batch 无收益纯费内存）。
+  - **接力缓存主动释放**（`ocr_translate.rs`）：`translate_region` 写历史后清空 `last_crop` / `last_ocr`（框选流程已结束，释放裁剪图 + OCR 行）。
+  - **shot:// 协议免 clone**（`main.rs`）：改为持锁期间直接编码 BMP，免 clone 整张全屏图（4K RGBA 单份 30MB+），保持原有三态状态码语义。
+  - 不改 OCR 默认档（保持 Medium）、不重建 session（oar-ocr 无 API 且成本高）。
+
+### 改进
+- **打包目标精简**：`tauri.conf.json` 的 `bundle.targets` 仅保留 nsis，移除 msi（个人工具无需企业分发，减少产物体积/构建时间）。
+
+### 文档
+- **README 视觉重构**：新增界面预览截图、功能特性区、下载入口；强化 PP-OCRv6 卖点（副标题点出 + 特性详述）；引用 PP-OCRv6 官方 benchmark 数字 + 参考链接区。
+
+---
+
 ## [0.1.0] — 2026-07-01 · 首个 GitHub Release
 
 P0 首个可用版本，由 `tauri-apps/tauri-action` 在 `windows-latest` runner 上自动构建。
