@@ -2,6 +2,16 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/) 格式。
 
+## [0.1.3] — 2026-07-03 · 修复模型无法下载
+
+### 修复
+- **模型缺失后无处下载**（`Settings.vue`）：模型下载的 UI 入口原只存在于一次性引导页 `Onboarding.vue`，一旦 `onboarding_completed` 变 true（首次走完引导、手改 toml、异常退出），引导页永不再现。模型若缺失（首次跳过、后来被删、文件损坏半成品），用户彻底无处下载，截图只报"OCR 模型未就绪，请先下载模型"却无下载入口。在设置页 OCR 分类补「模型状态 tag + 下载按钮 + 进度条 + 错误重试」兜底入口：下载逻辑从 `Onboarding.vue` 抄一份内联；下载前先 `store.save(draft)` 落盘 tier（`download_models` 用入参 tier 但 `reload_ocr_provider` 读 state.config.ocr.tier，不先落盘会导致下载新档位、reload 用旧档位错配）；下载中 disable 档位 select 防半途换档；`onBeforeUnmount` 清理 unlisten 句柄。
+
+### 改进
+- **关于页显示版本号**（`Settings.vue`）：关于分类此前只显示"SnapText"，现经 `getVersion()` 读 `tauri.conf.json` 的 version 字段显示 `vX.Y.Z`。
+
+---
+
 ## [0.1.2] — 2026-07-02 · 结果窗口交互优化
 
 ### 改进

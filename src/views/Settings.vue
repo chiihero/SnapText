@@ -1,7 +1,9 @@
 <script setup lang="ts">
 // 设置面板：8 分类（通用/快捷键/截图/OCR/翻译/界面/历史/关于）。
 // 草稿机制：深拷贝 config 编辑，保存时整体写回 + 重建翻译 Provider。
-import { onMounted, reactive, ref, watch } from "vue";
+import { onMounted, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { getVersion } from "@tauri-apps/api/app";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   NLayout,
   NLayoutSider,
@@ -19,6 +21,8 @@ import {
   NSpace,
   NCard,
   NAlert,
+  NTag,
+  NProgress,
   useMessage,
   type MenuOption,
 } from "naive-ui";
@@ -33,6 +37,9 @@ const activeTab = ref("translate");
 // 系统默认 prompt 模板——onMounted 时从后端 get_default_prompt 命令拉取
 // （单一数据源，前端零硬编码，避免与后端 DEFAULT_PROMPT_TEMPLATE 不同步）。
 const defaultPrompt = ref("");
+
+// 应用版本号——Tauri 内置 getVersion() 读 tauri.conf.json 的 version 字段。
+const appVersion = ref("");
 
 // 占位符说明——字面双花括号，放 script 里避免被 Vue 模板当插值解析。
 const PROMPT_PLACEHOLDER_HINT =
@@ -102,6 +109,19 @@ onMounted(async () => {
   } catch (e) {
     console.error("拉取默认 prompt 失败", e);
   }
+  // 拉取应用版本号（关于页展示用）。
+  try {
+    appVersion.value = await getVersion();
+  } catch (e) {
+    console.error("获取版本号失败", e);
+  }
+  // 检查 OCR 模型就绪态（OCR 分类展示状态 tag + 兜底下载入口）。
+  await checkModels();
+});
+
+onBeforeUnmount(() => {
+  unProgress?.();
+  unDone?.();
 });
 
 async function save() {
@@ -110,6 +130,95 @@ async function save() {
     message.success(ready ? "配置已保存" : "配置已保存（翻译未就绪，请检查 API Key）");
   } catch (e) {
     message.error(`保存失败：${e}`);
+  }
+}
+
+// ===== OCR 模型下载兜底入口（设置页）=====
+// 引导页外补一个恢复通道：模型被删/损坏/首次跳过 onboarding_completed 仍为 true 时，
+// 用户无处下载（引导页进不去），此处兜底。逻辑同 Onboarding.vue（接受重复换体验）。
+const modelsReady = ref(false);
+const downloading = ref(false);
+// 0~100，按 role(det/rec/dict) 分 3 段折算：det 0~33、rec 33~80、dict 80~100。
+const progress = ref(0);
+const downloadError = ref<string>("");
+// 后端 total 为 null（无 Content-Length）时显示脉冲动画。
+const progressActive = ref(false);
+let unProgress: UnlistenFn | null = null;
+let unDone: UnlistenFn | null = null;
+
+async function checkModels() {
+  modelsReady.value = await api.modelsReady(draft.ocr.tier).catch(() => false);
+}
+
+// 进度折算：role 三段权重 det:33 / rec:47 / dict:20。
+function roleBase(role: string): number {
+  if (role === "det") return 0;
+  if (role === "rec") return 33;
+  return 80;
+}
+function roleWeight(role: string): number {
+  if (role === "det") return 33;
+  if (role === "rec") return 47;
+  return 20;
+}
+
+// 下载前先落盘草稿：download_models 用入参 tier，但 reload_ocr_provider 读 state.config.ocr.tier，
+// 若用户改了档位没保存会导致两者错配（下载新档位、reload 用旧档位）。故先 save 再下载。
+async function downloadModels() {
+  downloadError.value = "";
+  downloading.value = true;
+  progress.value = 0;
+  progressActive.value = false;
+
+  try {
+    await store.save(JSON.parse(JSON.stringify(draft)));
+  } catch (e) {
+    downloading.value = false;
+    message.error(`保存档位失败：${e}`);
+    return;
+  }
+
+  // 先注册监听再触发下载，避免首条事件丢失。
+  unProgress = await listen<{ role: string; received: number; total: number | null }>(
+    "download-progress",
+    (e) => {
+      const { role, received, total } = e.payload;
+      const weight = roleWeight(role);
+      const base = roleBase(role);
+      if (total && total > 0) {
+        const within = (received / total) * weight;
+        progress.value = Math.min(100, Math.round(base + within));
+        progressActive.value = false;
+      } else {
+        progressActive.value = true;
+      }
+    },
+  );
+  unDone = await listen<{ ok: boolean; error: string }>("download-done", async (e) => {
+    downloading.value = false;
+    if (e.payload.ok) {
+      progress.value = 100;
+      progressActive.value = false;
+      await checkModels();
+      // 重建 OCR Provider：启动时模型缺失降级为 None，此处即时生效无需重启。
+      try {
+        await api.reloadOcrProvider();
+      } catch (e) {
+        console.error("重建 OCR Provider 失败", e);
+      }
+      message.success("模型下载完成");
+    } else {
+      downloadError.value = e.payload.error || "下载失败";
+      message.error(`模型下载失败：${e.payload.error}`);
+    }
+  });
+
+  try {
+    await api.downloadModels(draft.ocr.tier);
+  } catch (e) {
+    downloading.value = false;
+    downloadError.value = String(e);
+    message.error(`触发下载失败：${e}`);
   }
 }
 </script>
@@ -179,7 +288,11 @@ async function save() {
           <n-card title="文字识别">
             <n-form label-placement="left" :label-width="120">
               <n-form-item label="档位">
-                <n-select v-model:value="draft.ocr.tier" :options="tierOptions" />
+                <n-select
+                  v-model:value="draft.ocr.tier"
+                  :options="tierOptions"
+                  :disabled="downloading"
+                />
               </n-form-item>
               <n-form-item label="结果后处理">
                 <n-switch v-model:value="draft.ocr.postprocess" />
@@ -187,8 +300,44 @@ async function save() {
                   去空格 / 合并换行
                 </span>
               </n-form-item>
+
+              <n-form-item label="模型">
+                <div style="display: flex; flex-direction: column; gap: 8px; width: 100%">
+                  <n-tag :type="modelsReady ? 'success' : 'warning'" size="small" round>
+                    模型：{{ modelsReady ? "就绪" : "未下载" }}
+                  </n-tag>
+                  <div v-if="!modelsReady">
+                    <n-space vertical :size="8">
+                      <n-button
+                        type="primary"
+                        :loading="downloading"
+                        :disabled="downloading"
+                        @click="downloadModels"
+                      >
+                        {{ downloading ? "下载中…" : "开始下载" }}
+                      </n-button>
+                      <n-progress
+                        v-if="downloading || progress > 0"
+                        type="line"
+                        :percentage="progress"
+                        :indicator-placement="'inside'"
+                        :status="downloadError ? 'error' : 'success'"
+                        :processing="progressActive"
+                      />
+                      <n-alert v-if="downloadError" type="error" :show-icon="true">
+                        {{ downloadError }}（请重试）
+                      </n-alert>
+                    </n-space>
+                  </div>
+                  <span v-else style="color: var(--st-text-weak); font-size: 13px">
+                    ✓ 模型已就绪。
+                  </span>
+                </div>
+              </n-form-item>
             </n-form>
-            <p style="color: var(--st-text-weak); font-size: 12px">档位切换需重启生效。</p>
+            <p style="color: var(--st-text-weak); font-size: 12px">
+              模型来自 ModelScope（PP-OCRv6），须下载后才能使用截图识别。档位切换需重启生效。
+            </p>
           </n-card>
         </template>
 
@@ -355,7 +504,7 @@ async function save() {
         <!-- 关于 -->
         <template v-if="activeTab === 'about'">
           <n-card title="关于">
-            <p><strong>SnapText</strong></p>
+            <p><strong>SnapText</strong> <span style="color: var(--st-text-weak)">v{{ appVersion }}</span></p>
             <p style="color: var(--st-text-weak)">Windows 截图 OCR + 翻译工具</p>
             <p style="color: var(--st-text-weak); font-size: 12px">
               Tauri 2 + Vue 3 · snaptext-core
