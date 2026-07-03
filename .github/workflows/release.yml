@@ -34,8 +34,9 @@ jobs:
         # 不传 workspaces：项目 workspace 根在仓库顶层，target 默认就在 <repo>/target。
         # 旧配置 'src-tauri -> target' 误导缓存去 src-tauri/target 找，与实际产物路径不符，
         # 导致连续多次构建均 "No cache found" 全量编译（v0.1.1/v0.1.2 均如此，11-12 分钟）。
-        # v3 还改进了 Windows + workspace 的 key 计算逻辑。
-        uses: Swatinem/rust-cache@v3
+        # 固定到具体版本 v2.9.1（非浮动 v2/v3 标签）：v3 曾被上游回收导致 v0.1.3 CI 失败，
+        # 固定版本杜绝浮动标签被删再翻车。
+        uses: Swatinem/rust-cache@v2.9.1
 
       - name: 构建并发布
         uses: tauri-apps/tauri-action@v0
