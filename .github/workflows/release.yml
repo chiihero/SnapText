@@ -46,6 +46,26 @@ jobs:
           # 仅 tag push 时才走 Release 流程；手动触发（workflow_dispatch）只构建不打 Release。
           tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
           releaseName: 'SnapText v__VERSION__'
-          releaseBody: '详见 docs/CHANGELOG.md'
+          # Release 正文直接内联：GitHub Release 页面不渲染仓库内文件，
+          # 写「详见 docs/CHANGELOG.md」下载者看不到。改为内联本次更新内容。
+          releaseBody: |
+            ## 修复
+
+            - **第二次快捷键框选时结果窗口不刷新**：快捷键截图 → 出结果窗口 → 不关 →
+              再按快捷键框选，结果窗口停在第一次的内容不更新。
+
+            **根因**：结果窗口用固定 label `"result"` 重复创建，第二次起 Tauri 发现
+            同 label 窗口已存在 → 不重建页面 → `onMounted` 不重跑 → 不重新拉取
+            后端已更新的截图/OCR/翻译数据。
+
+            **修复**：改为「存在则复用刷新、不存在才新建」模式 ——
+            - 选区窗 crop 后判断结果窗口：存在则发 `result-refresh` 事件唤醒刷新，
+              不存在才新建窗口
+            - 结果窗口监听该事件，重新拉取裁剪图 → OCR → 翻译，完整重置状态防残留
+            - 加 generation 守卫：若旧一轮 OCR/翻译的异步请求在新一轮开始后才完成，
+              自动丢弃结果，避免慢的旧请求覆盖快的新请求
+            - 图片 URL 加时间戳防缓存，确保底图每次都刷新
+
+            后端零改动。详见 `docs/CHANGELOG.md`。
           releaseDraft: false
           prerelease: false

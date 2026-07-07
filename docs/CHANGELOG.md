@@ -2,6 +2,28 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/) 格式。
 
+## [0.1.4] — 2026-07-07 · 修复结果窗口不刷新
+
+### 修复
+- **第二次快捷键框选时结果窗口不刷新**（`Result.vue` / `Capture.vue`）：
+  快捷键截图 → 出结果窗口 → 不关 → 再按快捷键框选，结果窗口停在第一次
+  的内容不更新。根因：结果窗口用固定 label `"result"` 重复 `new WebviewWindow`，
+  第二次起 Tauri 发现已存在不重建页面 → `onMounted` 不重跑 → 不重新拉取
+  `last_crop` / OCR / 翻译（后端 `state.last_crop` 已是新数据但前端不取）。
+  改为「存在则复用刷新、不存在才新建」模式：
+  - **Capture.vue**：crop 后 `getByLabel("result")` 判断，存在则
+    `emit("result-refresh")` + `show()` + `setFocus()`，不存在才 `new`。
+  - **Result.vue**：`onMounted` 流程抽成 `refresh()`，监听
+    `result-refresh` 事件触发；完整重置 16 个响应式字段防止旧内容残留；
+    `img.src` 加 `?t=` 时间戳防 HTTP 缓存（同一显示器 crop 文件名固定，
+    URL 不变则浏览器不触发 onload → canvas 底图不更新）。
+  - **generation 守卫**：自动模式下 medium 档 OCR ~3s，用户可能在第一次
+    未跑完就框选第二次，旧请求后完成时丢弃不污染 UI、不弹错误 toast。
+
+后端零改动（`state.last_crop` / `last_ocr` 接力缓存已支持反复写入）。
+
+---
+
 ## [0.1.3] — 2026-07-03 · 修复模型无法下载
 
 ### 修复
