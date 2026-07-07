@@ -6,8 +6,14 @@
 // translate_region。关闭自动时停在对应视图，由工具栏三态按钮（原图/原文/译文）
 // 手动触发：点"原文"触发 OCR，点"译文"触发翻译（按钮即动作）。
 // OCR 行 bbox 是裁剪图内坐标，图即裁剪图本身，1:1 直接用。
-import { computed, onMounted, ref, watch } from "vue";
+//
+// 窗口复用模式：第二次框选时 Capture.vue 不新建窗口，而是 emit("result-refresh")，
+// 本文件 onMounted 注册了该事件的监听 → 调 refresh() 重跑完整流程并重置状态。
+// generation 守卫：若旧一轮 OCR/翻译的异步请求在新一轮开始后才 resolve，
+// 结果被丢弃不更新 UI（避免慢的旧请求覆盖快的新请求结果）。
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
 import {
@@ -67,47 +73,101 @@ const fontSize = ref(14);
 const imgW = ref(0);
 const imgH = ref(0);
 
+// 每轮刷新递增，runOcr/runTranslate 异步返回后比对以丢弃 stale 结果。
+// 场景：自动模式下 medium 档 OCR ~3s，用户可能在第一次还没跑完时就框选第二次，
+// 旧请求后完成时 generation 已变，结果丢弃不污染 UI。
+let generation = 0;
+let unlisten: UnlistenFn | null = null;
+
 onMounted(async () => {
-  t0Base = performance.now();
-  // 1. 拉裁剪图渲染原图（crop_region 已写盘，OCR 之前就能显示）。
+  // 监听复用刷新事件（Capture.vue 第二次框选时 emit）。窗口常驻后事件可靠送达。
   try {
-    const crop = await api.getLastCrop();
-    shotPath.value = crop.shot_path;
-    img.onload = () => {
-      imgW.value = img.naturalWidth;
-      imgH.value = img.naturalHeight;
-      renderBlurred();
-      draw();
-    };
-    img.src = api.fileSrc(crop.shot_path);
+    unlisten = await listen("result-refresh", () => {
+      refresh();
+    });
   } catch (e) {
+    // 事件注册失败极少见（仅在 webview 异常时），不阻断首次渲染。
+    console.warn("result-refresh listener 注册失败", e);
+  }
+  await refresh();
+});
+
+onBeforeUnmount(() => {
+  unlisten?.();
+});
+
+// 刷新流程：首次 onMounted 与复用 refresh 事件共用。
+// 完整重置状态防止上一次内容残留，generation 守卫丢弃 stale 异步结果。
+async function refresh() {
+  const gen = ++generation;
+  t0Base = performance.now();
+
+  // 1. 重置全部状态（复用窗口时旧内容必须清空，否则残留第一次的译文）。
+  phase.value = "idle";
+  view.value = "image";
+  ocrDone.value = false;
+  translateDone.value = false;
+  ocrLines.value = [];
+  translations.value = [];
+  perLineOriginal.value = [];
+  original.value = "";
+  translated.value = "";
+  provider.value = "";
+  totalMs.value = 0;
+  ocrMs.value = 0;
+  translateMs.value = 0;
+  imgW.value = 0;
+  imgH.value = 0;
+  shotPath.value = "";
+  draw();
+
+  // 2. 拉裁剪图渲染原图（crop_region 已写盘）。
+  let crop;
+  try {
+    crop = await api.getLastCrop();
+  } catch (e) {
+    // 不 close：失败时保留窗口，下次快捷键成功会自动修复。
     message.error(`加载结果失败：${e}`);
-    await getCurrentWindow().close();
     return;
   }
+  if (gen !== generation) return; // 期间已开始新一轮
+  shotPath.value = crop.shot_path;
+  img.onload = () => {
+    if (gen !== generation) return; // stale，丢弃
+    imgW.value = img.naturalWidth;
+    imgH.value = img.naturalHeight;
+    renderBlurred();
+    draw();
+  };
+  // 加 ?t= 时间戳防缓存：crop 文件名按 monitor_id 固定（result_<id>.png），
+  // 复用窗口时 convertFileSrc 生成的 URL 与上一次完全相同，浏览器不重新触发
+  // onload → canvas 底图不更新。时间戳强制 URL 唯一绕过缓存（与 Capture.vue 一致）。
+  img.src = `${api.fileSrc(crop.shot_path)}?t=${Date.now()}`;
 
-  // 读配置：字号 + 自动复制（runTranslate 用）+ 自动 OCR/翻译开关。
+  // 读配置：字号 + 自动复制 + 自动 OCR/翻译开关。
   const cfg = await api.getConfig();
+  if (gen !== generation) return; // stale
   fontSize.value = Math.max(10, Math.min(24, cfg.ui.card_font_size || 14));
   autoCopyTranslation = cfg.ui.auto_copy_translation;
 
-  // 2. 自动 OCR？关闭则停在原图态等手动。
+  // 3. 自动 OCR？关闭则停在原图态等手动。
   if (!cfg.general.auto_ocr) {
     phase.value = "idle";
     view.value = "image";
     return;
   }
-  if (!(await runOcr())) return;
+  if (!(await runOcr(gen))) return;
 
-  // 3. 自动翻译？关闭则停在原文态等手动。
+  // 4. 自动翻译？关闭则停在原文态等手动。
   if (!cfg.general.auto_translate) {
+    if (gen !== generation) return;
     phase.value = "done";
     view.value = "original";
     draw();
     return;
   }
-  await runTranslate();
-});
+  await runTranslate(gen);
+}
 
 watch([view, perLineOriginal, ocrLines, translations, fontSize], () => draw(), { deep: true });
 
@@ -170,12 +230,14 @@ function lineText(i: number): string {
     : translations.value[i] ?? "";
 }
 
-// OCR 阶段：调 recognize_region，成功后切到 original 视图。供 onMounted 自动与手动按钮复用。
-async function runOcr(): Promise<boolean> {
+// OCR 阶段：调 recognize_region，成功后切到 original 视图。供 refresh 自动与手动按钮复用。
+// gen：调用方的 generation 快照，await 后比对，若已过期则不更新 UI（stale 丢弃）。
+async function runOcr(gen: number): Promise<boolean> {
   phase.value = "recognizing";
   try {
     const tOcrStart = performance.now();
     const ocr = await api.recognizeRegion();
+    if (gen !== generation) return false; // stale
     ocrMs.value = Math.round(performance.now() - tOcrStart);
     ocrLines.value = ocr.ocr_lines;
     original.value = ocr.original;
@@ -186,6 +248,7 @@ async function runOcr(): Promise<boolean> {
     draw();
     return true;
   } catch (e) {
+    if (gen !== generation) return false; // stale，错误也不弹（避免干扰新一轮）
     message.error(`识别失败：${e}`);
     phase.value = "idle";
     return false;
@@ -193,11 +256,13 @@ async function runOcr(): Promise<boolean> {
 }
 
 // 翻译阶段：调 translate_region + 自动复制 + 落库（后端），成功后切到 translated 视图。
-async function runTranslate(): Promise<boolean> {
+// gen：调用方的 generation 快照，await 后比对，过期则不更新 UI。
+async function runTranslate(gen: number): Promise<boolean> {
   phase.value = "translating";
   try {
     const tTrStart = performance.now();
     const tr = await api.translateRegion();
+    if (gen !== generation) return false; // stale
     translateMs.value = Math.round(performance.now() - tTrStart);
     translations.value = tr.translations;
     translated.value = tr.translated;
@@ -212,6 +277,7 @@ async function runTranslate(): Promise<boolean> {
     draw();
     return true;
   } catch (e) {
+    if (gen !== generation) return false; // stale
     message.error(`翻译失败：${e}`);
     phase.value = "done";
     return false;
@@ -222,17 +288,18 @@ async function runTranslate(): Promise<boolean> {
 // - 切到 original 且 OCR 未跑 → 触发 OCR；
 // - 切到 translated 且翻译未跑 → 先确保 OCR 再触发翻译；
 // - 已跑过或切 image → 纯视图切换。
+// 手动按钮触发的用当前 generation（不会与 refresh 竞态，因 refresh 会重置 ocrDone）。
 async function selectView(v: View) {
   if (v === view.value || busy.value) return;
   if (v === "original" && !ocrDone.value) {
-    await runOcr();
+    await runOcr(generation);
     return;
   }
   if (v === "translated" && !translateDone.value) {
     if (!ocrDone.value) {
-      if (!(await runOcr())) return;
+      if (!(await runOcr(generation))) return;
     }
-    await runTranslate();
+    await runTranslate(generation);
     return;
   }
   view.value = v;

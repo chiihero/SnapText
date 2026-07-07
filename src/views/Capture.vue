@@ -12,6 +12,12 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen } from "@tauri-apps/api/event";
 import { api, type MonitorDto } from "../api";
 
+// 结果窗口固定 label：复用模式（已存在则 emit 刷新事件 + show，不存在才新建）。
+// 旧实现每次 new 同 label 窗口，第二次起 Tauri 发现已存在不重建，onMounted 不重跑 →
+// 结果窗停在第一次内容（bug）。改为复用：第二次框选时 Result.vue 收到 result-refresh
+// 事件重新拉取 last_crop → OCR → 翻译。
+const RESULT_LABEL = "result";
+
 const canvas = ref<HTMLCanvasElement | null>(null);
 const status = ref("加载截图…");
 const primary = ref<MonitorDto | null>(null);
@@ -132,14 +138,22 @@ async function onUp() {
     // 仅裁剪+写临时图（几十 ms），不等 OCR/翻译。后端 crop_region 把裁剪图
     // 缓存进 last_crop，结果窗口 onMounted 依次调 recognize/translate。
     await api.cropRegion(primary.value.id, bbox);
-    await new WebviewWindow("result", {
-      url: "index.html#/result",
-      title: "SnapText 译文",
-      width: 800,
-      height: 600,
-      resizable: true,
-      center: true,
-    });
+    // 结果窗口复用：已存在则 emit 事件让 Result.vue 重跑刷新流程，否则首次新建。
+    const existing = await WebviewWindow.getByLabel(RESULT_LABEL);
+    if (existing) {
+      await existing.emit("result-refresh");
+      await existing.show();
+      await existing.setFocus();
+    } else {
+      await new WebviewWindow(RESULT_LABEL, {
+        url: "index.html#/result",
+        title: "SnapText 译文",
+        width: 800,
+        height: 600,
+        resizable: true,
+        center: true,
+      });
+    }
     // 隐藏选区窗口（常驻复用，不 close）。
     dragStart.value = null;
     dragCur.value = null;
