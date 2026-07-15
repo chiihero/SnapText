@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "SnapText 默认权限集",
-  "windows": ["main", "capture", "result"],
+  "windows": ["main", "capture", "result", "settings", "history"],
   "permissions": [
     "core:default",
     "core:window:default",
