@@ -106,139 +106,15 @@ pub async fn get_last_crop(state: State<'_, AppState>) -> Result<CropResult, Str
         .ok_or_else(|| "无缓存裁剪图".to_string())
 }
 
-/// 诊断管线：在 Rust 内跑完整 capture → crop → OCR → translate 流程，绕过 GUI/鼠标。
-///
-/// 供 `mem-diag.ps1` 经 `single-instance` argv（`--diag-ocr`）触发。诊断目标是测
-/// 内存增长，框选坐标/鼠标交互是无关变量——直接调命令能消除时序干扰，比模拟鼠标可靠。
-/// `bbox=None` 取主屏全屏；`bbox=Some` 用指定尺寸（random 场景传不同尺寸测动态 shape）。
-///
-/// **非 `#[tauri::command]`**——内部函数，不暴露给前端 IPC。复用核心纯函数
-///（crop_frame/run_ocr/run_translate）+ 既有打点，每步自动产生 `[mem_diag]` 时间线。
-pub async fn diag_run_ocr_pipeline(app: &AppHandle, bbox: Option<Bbox>) -> Result<(), String> {
-    let state = app.state::<AppState>();
-
-    // 1. 截图（do_capture_all 自带 capture_before/after 打点，返回的 DTO 诊断不用）。
-    let _dtos = crate::commands::capture::do_capture_all(state.inner()).await?;
-
-    // 2. 取主屏帧 + 构造 bbox（None = 全屏）。
-    let captured = state.captured.lock().await;
-    let frame = captured
-        .iter()
-        .find(|f| f.monitor.is_primary)
-        .or_else(|| captured.first())
-        .ok_or_else(|| "无缓存截图帧".to_string())?;
-    let monitor_id = frame.monitor.id.as_str().to_string();
-    let effective_bbox = bbox.unwrap_or(Bbox {
-        x: frame.monitor.x,
-        y: frame.monitor.y,
-        w: frame.monitor.width as i32,
-        h: frame.monitor.height as i32,
-    });
-    // crop_frame 需帧数据，在持锁期间裁剪（与 crop_region 一致）。
-    let image = crop_frame(frame, effective_bbox)?;
-    drop(captured); // 立即释放 captured 锁，避免 OCR 期间长期持锁。
-
-    // 3. 缓存裁剪图（诊断不写 PNG 文件，省 IO；shot_path 留空，OCR 不依赖它）。
-    *state.last_crop.lock().await = Some(LastCrop {
-        shot_path: String::new(),
-        image: image.clone(),
-        monitor_id: monitor_id.clone(),
-        bbox: effective_bbox,
-    });
-
-    // 4. OCR（复用 recognize_region 的核心逻辑 + 打点）。
-    let cfg = state.config.lock().await.clone();
-    let ocr = state
-        .ocr
-        .lock()
-        .await
-        .clone()
-        .ok_or_else(|| "OCR 模型未就绪".to_string())?;
-    let img_w = image.width();
-    let img_h = image.height();
-    let ocr_before = crate::diag::snapshot_process_tree();
-    crate::diag::log_mem_diag("ocr_before", &ocr_before, &format!("img={img_w}x{img_h}"));
-    let ocr_lines = run_ocr(&image, ocr.as_ref(), &cfg).await?;
-    let ocr_after = crate::diag::snapshot_process_tree();
-    crate::diag::log_mem_diag(
-        "ocr_after",
-        &ocr_after,
-        &format!("img={img_w}x{img_h} lines={}", ocr_lines.len()),
-    );
-    let original: String = ocr_lines
-        .iter()
-        .map(|l| l.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    if original.trim().is_empty() {
-        // 空结果也清缓存释放内存（诊断场景全屏截图通常有文字，空说明桌面无文字）。
-        *state.last_crop.lock().await = None;
-        return Err("识别结果为空（桌面无文字？）".into());
-    }
-    *state.last_ocr.lock().await = Some(LastOcr {
-        ocr_lines: ocr_lines.clone(),
-        original: original.clone(),
-        monitor_id: monitor_id.clone(),
-        bbox: effective_bbox,
-    });
-
-    // 5. 翻译（复用 translate_region 的核心逻辑 + 打点 + 写历史 + 清缓存）。
-    let provider = state
-        .translate
-        .lock()
-        .await
-        .clone()
-        .ok_or_else(|| "未配置翻译 API Key".to_string())?;
-    let orig_len = original.chars().count();
-    let tr_before = crate::diag::snapshot_process_tree();
-    crate::diag::log_mem_diag("translate_before", &tr_before, &format!("chars={orig_len}"));
-    let (translations, resp) =
-        run_translate(&original, ocr_lines.len(), provider.as_ref(), &cfg).await?;
-    let tr_after = crate::diag::snapshot_process_tree();
-    crate::diag::log_mem_diag(
-        "translate_after",
-        &tr_after,
-        &format!("provider={}", resp.provider),
-    );
-
-    // 写历史（与 translate_region 一致，带 bbox/monitor 元数据）。
-    let record = HistoryRecord {
-        id: 0,
-        created_at: std::time::SystemTime::now(),
-        source_lang: resp.source,
-        target_lang: resp.target,
-        original_text: original,
-        translated_text: resp.translated_text.clone(),
-        provider: resp.provider.clone(),
-        model: resp.model.clone(),
-        prompt_tokens: resp.token_usage.map(|u| u.prompt_tokens),
-        completion_tokens: resp.token_usage.map(|u| u.completion_tokens),
-        total_cost_cny_milli: None,
-        monitor_id: Some(monitor_id),
-        bbox: Some(effective_bbox),
-        notes: Some("diag".into()),
-        screenshot_png: None, // 诊断不存截图
-        ocr_lines: Some(ocr_lines.clone()),
-        line_translations: Some(translations.clone()),
-    };
-    if let Err(e) = state.history.insert(record).await {
-        tracing::warn!(error = %e, "诊断：写入历史失败");
-    }
-
-    // 清接力缓存释放内存（与 translate_region 末尾一致）。
-    *state.last_crop.lock().await = None;
-    *state.last_ocr.lock().await = None;
-
-    tracing::info!(target: "mem_diag", "诊断管线完成（capture→ocr→translate）");
-    Ok(())
-}
-
 /// 第 2 层：OCR + 后处理，返回 OCR 行与整段原文。
 ///
 /// 从 `state.last_crop` 取裁剪图（`crop_region` 写入）。结果缓存进
 /// `state.last_ocr` 供 `translate_region`。
 #[tauri::command]
-pub async fn recognize_region(state: State<'_, AppState>) -> Result<OcrResult, String> {
+pub async fn recognize_region(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<OcrResult, String> {
     let (image, monitor_id, bbox) = {
         let last = state.last_crop.lock().await;
         let last = last
@@ -247,24 +123,9 @@ pub async fn recognize_region(state: State<'_, AppState>) -> Result<OcrResult, S
         (last.image.clone(), last.monitor_id.clone(), last.bbox)
     };
     let cfg = state.config.lock().await.clone();
-    let ocr = state
-        .ocr
-        .lock()
-        .await
-        .clone()
-        .ok_or_else(|| "OCR 模型未就绪，请先在引导页或设置页下载模型".to_string())?;
-    // 诊断打点：OCR 前内存 + 输入图尺寸（验证 ort arena 渐进扩容假说）。
-    let img_w = image.width();
-    let img_h = image.height();
-    let ocr_before = crate::diag::snapshot_process_tree();
-    crate::diag::log_mem_diag("ocr_before", &ocr_before, &format!("img={img_w}x{img_h}"));
+    // OCR provider 经 ensure_ocr_provider 懒获取——空闲被回收后会在此按需重建。
+    let ocr = crate::commands::config_cmd::ensure_ocr_provider(&app).await?;
     let ocr_lines = run_ocr(&image, ocr.as_ref(), &cfg).await?;
-    let ocr_after = crate::diag::snapshot_process_tree();
-    crate::diag::log_mem_diag(
-        "ocr_after",
-        &ocr_after,
-        &format!("img={img_w}x{img_h} lines={}", ocr_lines.len()),
-    );
     let original: String = ocr_lines
         .iter()
         .map(|l| l.text.as_str())
@@ -310,18 +171,8 @@ pub async fn translate_region(state: State<'_, AppState>) -> Result<TranslateRes
         .clone()
         .ok_or_else(|| "未配置翻译 API Key，请在设置中填写".to_string())?;
 
-    // 诊断打点：翻译前内存（验证 reqwest 连接池 / 响应体释放）。
-    let orig_len = original.chars().count();
-    let tr_before = crate::diag::snapshot_process_tree();
-    crate::diag::log_mem_diag("translate_before", &tr_before, &format!("chars={orig_len}"));
     let (translations, resp) =
         run_translate(&original, ocr_lines.len(), provider.as_ref(), &cfg).await?;
-    let tr_after = crate::diag::snapshot_process_tree();
-    crate::diag::log_mem_diag(
-        "translate_after",
-        &tr_after,
-        &format!("provider={}", resp.provider),
-    );
 
     // 裁剪图编码为 PNG 入历史（裁剪图已由 crop_region 写盘，此处复用内存图）。
     let screenshot_png = read_last_crop_png(&state).await;

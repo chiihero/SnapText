@@ -153,7 +153,6 @@ export const api = {
   translateRegion: () => invoke<TranslateResult>("translate_region"),
   saveImageCopy: (sourcePath: string, destPath: string) =>
     invoke<void>("save_image_copy", { sourcePath, destPath }),
-  logDiag: (tag: string, message: string) => invoke<void>("log_diag", { tag, message }),
   checkFile: (path: string) => invoke<string>("check_file", { path }),
 
   // 历史

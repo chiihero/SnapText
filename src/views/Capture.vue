@@ -33,7 +33,6 @@ const firstDrawn = ref(false);
 let unlisten: (() => void) | null = null;
 
 onMounted(async () => {
-  api.logDiag("capture_timing", "onMounted");
   // 读蒙版不透明度配置（不阻塞截图加载，失败用默认）。
   api.getConfig().then((cfg) => {
     overlayAlpha.value = cfg.ui.overlay_dim_alpha ?? 0.5;
@@ -43,13 +42,11 @@ onMounted(async () => {
   // 收到即重置绘制状态 + 拉取截图渲染。窗口常驻所以事件可靠。
   try {
     unlisten = await listen<MonitorDto[]>("capture-ready", (event) => {
-      api.logDiag("capture_timing", "收到 capture-ready 事件");
       firstDrawn.value = false;
       loadAndDraw(event.payload);
     });
-    api.logDiag("capture_timing", "capture-ready listener 已注册");
   } catch (e) {
-    api.logDiag("capture_timing", `listen 注册失败：${e}`);
+    console.error("capture-ready listen 失败", e);
   }
 
   // 兜底：若窗口是首次加载（还没收到任何 capture-ready，但 state.captured 已有缓存，
@@ -73,16 +70,13 @@ onMounted(async () => {
 
 // 拉取截图配置 + 渲染：从 monitors 选主屏，img.src 用 shot:// URI 直接从内存取 BMP。
 function loadAndDraw(monitors: MonitorDto[]) {
-  const fetchStart = performance.now();
   primary.value = monitors.find((m) => m.primary) ?? monitors[0] ?? null;
   if (!primary.value) {
     status.value = "未找到显示器";
     return;
   }
   status.value = "拖动鼠标框选文字区域 · Esc 取消";
-  const imgStart = performance.now();
   img.onload = () => {
-    api.logDiag("capture_timing", `img.onload in ${(performance.now() - imgStart).toFixed(0)}ms (fetch dto ${(performance.now() - fetchStart).toFixed(0)}ms)`);
     draw();
   };
   // shot_path 已是 shot:// URI（http://shot.localhost/<id>），直接当 src，从内存取 BMP。
@@ -157,8 +151,6 @@ async function onUp() {
     // 隐藏选区窗口（常驻复用，不 close）。
     dragStart.value = null;
     dragCur.value = null;
-    // 诊断打点：选区隐藏时记录到后端日志（与 mem_diag 时间线对齐）。
-    api.logDiag("mem_diag", "capture_hide").catch(() => {});
     await getCurrentWindow().hide();
   } catch (e) {
     status.value = `处理失败：${e}`;

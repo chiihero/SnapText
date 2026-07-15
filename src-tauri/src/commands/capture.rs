@@ -79,20 +79,15 @@ fn frame_to_dto(frame: &snaptext_core::types::CapturedFrame) -> MonitorDto {
 pub async fn do_capture_all(state: &AppState) -> Result<Vec<MonitorDto>, String> {
     let start = std::time::Instant::now();
     tracing::info!("capture_all 开始执行");
-    let before = crate::diag::snapshot_process_tree();
     let frames = state.capture.capture_all().await.map_err(|e| {
         tracing::error!(error = %e, "capture_all 截图失败");
         format!("截图失败：{e}")
     })?;
-    let after = crate::diag::snapshot_process_tree();
     tracing::info!(
         count = frames.len(),
         capture_ms = start.elapsed().as_millis(),
         "capture_all 抓帧完成"
     );
-    // 诊断打点：截图前后内存（验证 WGC/DXGI 截图后释放情况）。
-    crate::diag::log_mem_diag("capture_before", &before, "");
-    crate::diag::log_mem_diag("capture_after", &after, &format!("count={}", frames.len()));
 
     let dtos = frames_to_dtos(&frames);
     *state.captured.lock().await = frames;
@@ -112,15 +107,6 @@ pub async fn do_capture_all(state: &AppState) -> Result<Vec<MonitorDto>, String>
 pub async fn save_image_copy(source_path: String, dest_path: String) -> Result<(), String> {
     std::fs::copy(&source_path, &dest_path).map_err(|e| format!("复制图片失败：{e}"))?;
     Ok(())
-}
-
-/// 诊断日志：前端把关键状态（路径、URL、加载结果）传过来，写入 tracing 日志文件。
-///
-/// 选区窗口白屏排查用：前端无法直接写文件，借此命令把 webview 侧信息落到
-/// %APPDATA%\SnapText\logs\snaptext.log，便于定位 asset 协议加载失败等问题。
-#[tauri::command]
-pub async fn log_diag(tag: String, message: String) {
-    tracing::info!(tag = %tag, diag = %message, "前端诊断");
 }
 
 /// 验证文件是否真实存在 + 返回信息（诊断用）。

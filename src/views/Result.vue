@@ -239,8 +239,6 @@ async function runOcr(gen: number): Promise<boolean> {
     const ocr = await api.recognizeRegion();
     if (gen !== generation) return false; // stale
     ocrMs.value = Math.round(performance.now() - tOcrStart);
-    // 诊断打点：OCR 完成时间点记录到后端日志（与 mem_diag 时间线对齐）。
-    api.logDiag("mem_diag", `result_ocr_done lines=${ocr.ocr_lines.length}`).catch(() => {});
     ocrLines.value = ocr.ocr_lines;
     original.value = ocr.original;
     perLineOriginal.value = ocr.ocr_lines.map(() => false);
@@ -266,8 +264,6 @@ async function runTranslate(gen: number): Promise<boolean> {
     const tr = await api.translateRegion();
     if (gen !== generation) return false; // stale
     translateMs.value = Math.round(performance.now() - tTrStart);
-    // 诊断打点：翻译完成时间点记录到后端日志（与 mem_diag 时间线对齐）。
-    api.logDiag("mem_diag", `result_translate_done chars=${tr.translated.length}`).catch(() => {});
     translations.value = tr.translations;
     translated.value = tr.translated;
     provider.value = tr.provider;

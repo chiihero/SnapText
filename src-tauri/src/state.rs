@@ -5,6 +5,7 @@
 //! 命令内只取用。可变部分（翻译 Provider 重建、config 写回）用 Mutex 保护。
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use snaptext_core::capture::{CaptureProvider, WindowsCaptureProvider};
 use snaptext_core::history::{HistoryStore, SqliteHistoryStore};
@@ -15,11 +16,26 @@ use tokio::sync::Mutex;
 
 use crate::commands::ocr_translate::{LastCrop, LastOcr};
 
+/// OCR session 槽：provider + 最后使用时间，合并到同一把锁，避免后台回收与
+/// OCR 入口的 TOCTOU 竞态（参见 main.rs 的空闲回收 tick）。
+pub struct OcrSlot {
+    /// OCR Provider；模型缺失/空闲被回收时为 None。
+    pub provider: Option<Arc<dyn OcrProvider>>,
+    /// 最后一次取得 provider 的时刻。启动时初始化为 now()——
+    /// 即"启动后 10 分钟没用也回收"，符合"挂着不用就回落"的诉求。
+    pub last_used: Instant,
+}
+
 /// 全局应用状态，经 `app.manage()` 注入，命令用 `State<'_, AppState>` 取用。
 pub struct AppState {
     pub capture: Arc<dyn CaptureProvider>,
-    /// OCR Provider；模型缺失时为 None（启动不崩，引导页/设置页下载后 reload_ocr_provider 重建）。
-    pub ocr: Mutex<Option<Arc<dyn OcrProvider>>>,
+    /// OCR session 槽（provider + last_used 合并在同一把锁，消除回收竞态）。
+    /// provider 为 None 的两种情况：① 模型缺失启动降级；② 空闲超时被后台 tick 回收。
+    /// 取用时经 ensure_ocr_provider 懒重建（含单飞锁 ocr_init）。
+    pub ocr: Mutex<OcrSlot>,
+    /// OCR Provider 重建单飞锁：保证同一时刻最多一个懒重建任务在加载模型，
+    /// 防止并发请求各自加载一套 ONNX session（瞬时内存反而飙高）。
+    pub ocr_init: Mutex<()>,
     /// 翻译 Provider；缺 API Key 时为 None（设置保存后 rebuild）。
     pub translate: Mutex<Option<Arc<dyn TranslationProvider>>>,
     pub history: Arc<dyn HistoryStore>,
@@ -88,7 +104,11 @@ impl AppState {
 
         Ok(Self {
             capture,
-            ocr: Mutex::new(ocr),
+            ocr: Mutex::new(OcrSlot {
+                provider: ocr,
+                last_used: Instant::now(),
+            }),
+            ocr_init: Mutex::new(()),
             translate: Mutex::new(translate),
             history,
             config: Mutex::new(config),

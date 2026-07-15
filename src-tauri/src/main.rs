@@ -6,10 +6,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
-mod diag;
 mod state;
 mod window;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use snaptext_core::Config;
@@ -69,21 +69,7 @@ fn main() {
                 responder.respond(response.unwrap());
             });
         })
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            // 诊断模式：argv 含 "--diag-ocr" 时跑 OCR 管线（绕过 GUI/鼠标）。
-            // 供 mem-diag.ps1 触发：`snaptext.exe --diag-ocr` 或 `--diag-ocr=800x600`。
-            if argv.iter().any(|a| a == "--diag-ocr" || a.starts_with("--diag-ocr=")) {
-                let handle = app.app_handle().clone();
-                let bbox = parse_diag_bbox(&argv);
-                tauri::async_runtime::spawn(async move {
-                    if let Err(e) =
-                        commands::ocr_translate::diag_run_ocr_pipeline(&handle, bbox).await
-                    {
-                        tracing::warn!(error = %e, "诊断 OCR 管线失败");
-                    }
-                });
-                return;
-            }
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // 第二实例：聚焦已有主窗口。
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
@@ -158,6 +144,12 @@ fn main() {
             // 省掉每次创建窗口的 ~400ms 冷启动（参照 Snipaste/Flameshot 模式）。
             window::ensure_capture_window(app.handle())?;
 
+            // 空闲回收 OCR session：ort 的 CPU arena 只随 session drop 归还 OS，
+            // 首次大图 OCR 后内存高位不落。后台 tick 每 60s 检查，若距上次 OCR 超过
+            // 10 分钟且 provider 无活跃引用（strong_count==1，即只剩 state 自己持有），
+            // 则 drop session 释放 arena；下次 OCR 经 ensure_ocr_provider 懒重建。
+            spawn_ocr_idle_reclaimer(app.handle().clone());
+
             tracing::info!("SnapText 启动完成");
             Ok(())
         })
@@ -189,7 +181,6 @@ fn main() {
             commands::capture::capture_all,
             commands::capture::get_last_capture,
             commands::capture::save_image_copy,
-            commands::capture::log_diag,
             commands::capture::check_file,
             commands::ocr_translate::crop_region,
             commands::ocr_translate::get_last_crop,
@@ -207,26 +198,49 @@ fn main() {
         .expect("启动 SnapText 失败");
 }
 
-/// 解析诊断 argv 中的 bbox 尺寸参数。
+/// OCR session 空闲回收阈值：超过此时长未 OCR，后台 tick 会 drop session 释放 arena。
+const OCR_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// 启动后台任务，周期性回收空闲的 OCR session。
 ///
-/// 支持格式 `--diag-ocr=800x600`（宽x高）。坐标固定 (0,0) 起点——诊断只关心尺寸
-/// （测动态 shape 扩容），不关心裁剪位置。无此参数或格式非法返回 None（全屏）。
-fn parse_diag_bbox(argv: &[String]) -> Option<snaptext_core::types::Bbox> {
-    for a in argv {
-        if let Some(rest) = a.strip_prefix("--diag-ocr=") {
-            // 格式 WxH，如 "800x600"。
-            let parts: Vec<&str> = rest.split('x').collect();
-            if parts.len() == 2 {
-                if let (Ok(w), Ok(h)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
-                    if w > 0 && h > 0 {
-                        return Some(snaptext_core::types::Bbox { x: 0, y: 0, w, h });
+/// ort 的 CPU BFCArena 只在 session drop 时归还 OS（rc.12 无"推理后释放"API），
+/// 首次大图 OCR 后 arena 按最大输入 shape 攒住 ~1G+ 不落。本任务每 60s 检查：
+/// 若 `last_used` 距今超过 `OCR_IDLE_TIMEOUT` 且 provider 引用计数为 1（仅 state 持有，
+/// 无活跃推理任务），则置 None 让 Arc 析构释放内存。下次 OCR 由 ensure_ocr_provider 重建。
+///
+/// 强引用检查是关键：若直接置 None，正在跑的 OCR 仍持 clone 的 Arc，arena 不释放，
+/// 且入口又会重建一套 session = 重复加载。strong_count==1 保证只在真正空闲时回收。
+fn spawn_ocr_idle_reclaimer(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        // 跳过 interval 首次立即触发（启动刚建好 provider 不该马上查回收）。
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let state = app.state::<crate::state::AppState>();
+            let should_reclaim = {
+                let slot = state.ocr.lock().await;
+                match slot.provider.as_ref() {
+                    Some(p) => {
+                        // strong_count==1 表示只有 state 持有，无活跃 OCR 任务在用。
+                        Arc::strong_count(p) == 1 && slot.last_used.elapsed() >= OCR_IDLE_TIMEOUT
+                    }
+                    None => false, // 已被回收（或启动降级 None），无需处理。
+                }
+            };
+            if should_reclaim {
+                let mut slot = state.ocr.lock().await;
+                if let Some(p) = slot.provider.as_ref() {
+                    // 二次检查 strong_count，防止上面释放锁后正好有人取用。
+                    if Arc::strong_count(p) == 1 {
+                        let idle_secs = slot.last_used.elapsed().as_secs();
+                        slot.provider = None;
+                        tracing::info!(idle_secs, "OCR session 空闲超时，已回收释放 arena");
                     }
                 }
             }
-            return None; // 有 = 但格式错，降级全屏。
         }
-    }
-    None // 无 = 参数（纯 --diag-ocr），全屏。
+    });
 }
 
 /// tracing 双输出（stderr + 日志文件），按 config 配置 level/file，搬自旧 logging.rs。
@@ -260,7 +274,9 @@ fn init_logging(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
         .create(true)
         .append(true)
         .open(&log_path)?;
-    let file_layer = fmt::layer().with_writer(file);
+    // with_ansi(false)：文件不带终端控制码（ANSI 是给终端看的），
+    // 让 snaptext.log 可被脚本/人类稳定消费（mem-diag.ps1 依赖干净文本）。
+    let file_layer = fmt::layer().with_writer(file).with_ansi(false);
 
     tracing_subscriber::registry()
         .with(filter)
