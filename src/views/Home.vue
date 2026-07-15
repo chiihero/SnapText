@@ -22,6 +22,11 @@ onMounted(async () => {
     return;
   }
   modelsReady.value = await api.modelsReady(store.config?.ocr.tier ?? "medium").catch(() => false);
+  // 模型缺失（已完成引导但模型被删/损坏）→ 也跳引导页，引导页有幂等检查不重复下载。
+  if (!modelsReady.value) {
+    router.replace("/onboarding");
+    return;
+  }
   // 热键注册失败（被其他程序占用等）：一次性引导用户去设置修改。
   if (store.hotkeyError) {
     message.warning("全局热键注册失败，可能被其他程序占用，请前往设置修改");

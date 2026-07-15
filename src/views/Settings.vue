@@ -292,6 +292,7 @@ async function downloadModels() {
                   v-model:value="draft.ocr.tier"
                   :options="tierOptions"
                   :disabled="downloading"
+                  @update:value="checkModels"
                 />
               </n-form-item>
               <n-form-item label="结果后处理">
