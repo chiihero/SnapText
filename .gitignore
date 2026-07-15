@@ -11,6 +11,9 @@
 *.swp
 *.swo
 
+# ZCode 本地工具状态
+.zcode/
+
 # 本地环境
 .env
 .env.local

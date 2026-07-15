@@ -157,6 +157,8 @@ async function onUp() {
     // 隐藏选区窗口（常驻复用，不 close）。
     dragStart.value = null;
     dragCur.value = null;
+    // 诊断打点：选区隐藏时记录到后端日志（与 mem_diag 时间线对齐）。
+    api.logDiag("mem_diag", "capture_hide").catch(() => {});
     await getCurrentWindow().hide();
   } catch (e) {
     status.value = `处理失败：${e}`;

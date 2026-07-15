@@ -58,12 +58,24 @@ pub async fn history_list(
     state: State<'_, AppState>,
     limit: u32,
 ) -> Result<Vec<HistoryDto>, String> {
-    state
+    // 诊断打点：验证 list 是否把 screenshot_png BLOB 整列读进 Rust 进程（to_dto 只取
+    // has_screenshot 布尔，BLOB 字节是纯浪费）。预期 main_priv 在查询后明显尖刺。
+    let before = crate::diag::snapshot_process_tree();
+    crate::diag::log_mem_diag("history_list_before", &before, &format!("limit={limit}"));
+    let result = state
         .history
         .list(limit)
         .await
         .map(|rs| rs.into_iter().map(to_dto).collect())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    let after = crate::diag::snapshot_process_tree();
+    let count = result.as_ref().ok().map_or(0, Vec::len);
+    crate::diag::log_mem_diag(
+        "history_list_after",
+        &after,
+        &format!("limit={limit} returned={count}"),
+    );
+    result
 }
 
 #[tauri::command]
@@ -72,12 +84,26 @@ pub async fn history_search(
     limit: u32,
     keyword: String,
 ) -> Result<Vec<HistoryDto>, String> {
-    state
+    let before = crate::diag::snapshot_process_tree();
+    crate::diag::log_mem_diag(
+        "history_search_before",
+        &before,
+        &format!("limit={limit} kw={keyword}"),
+    );
+    let result = state
         .history
         .search(limit, &keyword)
         .await
         .map(|rs| rs.into_iter().map(to_dto).collect())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    let after = crate::diag::snapshot_process_tree();
+    let count = result.as_ref().ok().map_or(0, Vec::len);
+    crate::diag::log_mem_diag(
+        "history_search_after",
+        &after,
+        &format!("limit={limit} kw={keyword} returned={count}"),
+    );
+    result
 }
 
 /// 取单条记录的截图（base64 data URL，前端 <img> 直接用）。

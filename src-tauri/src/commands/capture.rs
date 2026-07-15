@@ -79,15 +79,20 @@ fn frame_to_dto(frame: &snaptext_core::types::CapturedFrame) -> MonitorDto {
 pub async fn do_capture_all(state: &AppState) -> Result<Vec<MonitorDto>, String> {
     let start = std::time::Instant::now();
     tracing::info!("capture_all 开始执行");
+    let before = crate::diag::snapshot_process_tree();
     let frames = state.capture.capture_all().await.map_err(|e| {
         tracing::error!(error = %e, "capture_all 截图失败");
         format!("截图失败：{e}")
     })?;
+    let after = crate::diag::snapshot_process_tree();
     tracing::info!(
         count = frames.len(),
         capture_ms = start.elapsed().as_millis(),
         "capture_all 抓帧完成"
     );
+    // 诊断打点：截图前后内存（验证 WGC/DXGI 截图后释放情况）。
+    crate::diag::log_mem_diag("capture_before", &before, "");
+    crate::diag::log_mem_diag("capture_after", &after, &format!("count={}", frames.len()));
 
     let dtos = frames_to_dtos(&frames);
     *state.captured.lock().await = frames;

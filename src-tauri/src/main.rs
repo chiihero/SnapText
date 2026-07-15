@@ -6,6 +6,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod diag;
 mod state;
 mod window;
 
@@ -68,7 +69,21 @@ fn main() {
                 responder.respond(response.unwrap());
             });
         })
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // 诊断模式：argv 含 "--diag-ocr" 时跑 OCR 管线（绕过 GUI/鼠标）。
+            // 供 mem-diag.ps1 触发：`snaptext.exe --diag-ocr` 或 `--diag-ocr=800x600`。
+            if argv.iter().any(|a| a == "--diag-ocr" || a.starts_with("--diag-ocr=")) {
+                let handle = app.app_handle().clone();
+                let bbox = parse_diag_bbox(&argv);
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) =
+                        commands::ocr_translate::diag_run_ocr_pipeline(&handle, bbox).await
+                    {
+                        tracing::warn!(error = %e, "诊断 OCR 管线失败");
+                    }
+                });
+                return;
+            }
             // 第二实例：聚焦已有主窗口。
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
@@ -190,6 +205,28 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("启动 SnapText 失败");
+}
+
+/// 解析诊断 argv 中的 bbox 尺寸参数。
+///
+/// 支持格式 `--diag-ocr=800x600`（宽x高）。坐标固定 (0,0) 起点——诊断只关心尺寸
+/// （测动态 shape 扩容），不关心裁剪位置。无此参数或格式非法返回 None（全屏）。
+fn parse_diag_bbox(argv: &[String]) -> Option<snaptext_core::types::Bbox> {
+    for a in argv {
+        if let Some(rest) = a.strip_prefix("--diag-ocr=") {
+            // 格式 WxH，如 "800x600"。
+            let parts: Vec<&str> = rest.split('x').collect();
+            if parts.len() == 2 {
+                if let (Ok(w), Ok(h)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
+                    if w > 0 && h > 0 {
+                        return Some(snaptext_core::types::Bbox { x: 0, y: 0, w, h });
+                    }
+                }
+            }
+            return None; // 有 = 但格式错，降级全屏。
+        }
+    }
+    None // 无 = 参数（纯 --diag-ocr），全屏。
 }
 
 /// tracing 双输出（stderr + 日志文件），按 config 配置 level/file，搬自旧 logging.rs。
